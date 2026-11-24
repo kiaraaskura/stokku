@@ -4,7 +4,8 @@ packages:
   - apps/*
   - packages/*
 
-# pnpm >= 10: only these dependencies may run postinstall build scripts.
+# pnpm 12: only these dependencies may run postinstall build scripts.
+# (pnpm 12 renamed this key from onlyBuiltDependencies to allowBuilds.)
 # esbuild is needed by vite. Keep this list short and reviewed.
-onlyBuiltDependencies:
-  - esbuild
+allowBuilds:
+  esbuild: true
