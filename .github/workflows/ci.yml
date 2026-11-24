@@ -46,13 +46,34 @@ jobs:
       - run: pnpm --filter ./apps/web run build
 
   api:
-    name: API (fmt · clippy -D warnings · tests)
+    name: API (fmt · clippy -D warnings · DB-backed tests)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: ${{ hashFiles('services/api/Cargo.toml') != '' }}
     defaults:
       run:
         working-directory: services/api
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Throwaway per-job container, so trust auth is acceptable here
+          # (the test harness connects as the passwordless non-superuser
+          # role `stokku`); never configure trust on a real environment.
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      # Correctness: without this the DB-backed tests (auth, moving-average,
+      # ledger property test) print "SKIPPED" and the job goes green having
+      # exercised nothing — a false green.
+      STOKKU_TEST_ADMIN_URL: postgres://postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -61,6 +82,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: services/api
+      - name: create the non-superuser app role the tests connect as
+        working-directory: .
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          psql "$STOKKU_TEST_ADMIN_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE stokku LOGIN"
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -73,17 +99,25 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: stokku
+          # Bootstrap superuser is "postgres", like the dev cluster and the
+          # compose stack — the service must NOT make the app role a
+          # superuser, or forced RLS is silently bypassed and the
+          # cross-tenant proofs in verify.sql are meaningless.
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: stokku
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U stokku -d stokku"
+          --health-cmd "pg_isready -U postgres -d stokku"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 12
     env:
+      # Migrations run on the admin DSN (0010 auth functions need a
+      # superuser); seed + verify run as the non-superuser app role, exactly
+      # like the dev environment.
+      MIGRATION_DATABASE_URL: postgres://postgres:SI_SECRET_DBPASSWORD_QH2HET5P@localhost:5432/postgres
       DATABASE_URL: postgres://stokku:SI_SECRET_DBPASSWORD_QH2HET5P@localhost:5432/stokku
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +125,9 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
           cargo install sqlx-cli --version 0.9.1 --no-default-features --features postgres
+      - name: create the non-superuser app role
+        run: |
+          psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE stokku LOGIN PASSWORD 'ci'"
       - run: ./scripts/migrate.sh
       - run: ./scripts/seed.sh
       - name: seed again (must insert 0 rows)
