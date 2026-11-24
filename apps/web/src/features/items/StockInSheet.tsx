@@ -1,16 +1,20 @@
 import { useEffect, useState } from 'react'
 import { useAppState } from '../../state/AppState'
+import { useAuth } from '../../state/AuthState'
 import { useI18n } from '../../i18n/I18nProvider'
 import { Sheet } from '../../components/Sheet'
 import { Button } from '../../components/primitives'
 import { CurrencyInput, Input, QtyInput } from '../../components/inputs'
 import { formatIDR, formatQty, qtyTimesUnitCost } from '../../lib/money'
 import { todayISO } from '../../lib/date'
+import { remoteOrLocal } from '../../api/gateway'
+import { NetworkError } from '../../api/types'
 import type { Item } from '../../db/types'
 
 /**
  * 3-tap stock-in (T-213): tap "Stok masuk" on a row → qty (defaults to 1, +/− buttons)
  * → cost (prefilled with the current average cost) → Simpan. Works fully offline.
+ * Online the move posts straight to the API; offline it queues with an op_id.
  */
 export function StockInSheet({
   item,
@@ -21,7 +25,8 @@ export function StockInSheet({
   onClose: () => void
   onSaved: () => void
 }) {
-  const { repo, toast } = useAppState()
+  const { repo, toast, online, apiMode, outlet, flushAgain } = useAppState()
+  const { api } = useAuth()
   const { t } = useI18n()
   const [qtyM, setQtyM] = useState(1000)
   const [cost, setCost] = useState(0)
@@ -47,19 +52,53 @@ export function StockInSheet({
       return
     }
     setSaving(true)
+    const businessDate = todayISO()
+    const noteText = note.trim() === '' ? null : note.trim()
     try {
-      await repo.call('stockIn', {
-        itemId: item.id,
-        qtyM,
-        unitCost: cost,
-        businessDate: todayISO(),
-        note: note.trim() === '' ? null : note.trim(),
-        supplier: null,
+      const { source } = await remoteOrLocal({
+        online,
+        session: apiMode,
+        remote: () =>
+          api.stockMove({
+            item_id: item.id,
+            outlet_id: outlet?.id ?? '',
+            type: 'in',
+            qty_positive: qtyM / 1000,
+            unit_cost: cost,
+            business_date: businessDate,
+            note: noteText ?? undefined,
+          }),
+        onRemoteSuccess: async (move) => {
+          await repo.call('applyServerStockMove', move)
+          // refresh the item so stock / cost_avg are the server's numbers
+          try {
+            const fresh = await api.getItem(item.id)
+            await repo.call('applyServerItems', [fresh])
+          } catch {
+            // read path will refresh it
+          }
+        },
+        local: () =>
+          repo.call('stockIn', {
+            itemId: item.id,
+            qtyM,
+            unitCost: cost,
+            businessDate,
+            note: noteText,
+            supplier: null,
+          }),
       })
-      toast(t('stockin.saved'))
+      if (source === 'server') {
+        toast(t('stockin.saved'))
+      } else {
+        // queued optimistically; the flusher posts it when the network returns
+        flushAgain()
+        toast(t('sync.queued'))
+      }
       onSaved()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (err instanceof NetworkError) setError(t('auth.networkError'))
+      else setError(err instanceof Error ? err.message : String(err))
     } finally {
       setSaving(false)
     }

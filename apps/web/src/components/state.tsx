@@ -94,10 +94,11 @@ export function ErrorView({ message, onRetry }: { message?: string; onRetry?: ()
   )
 }
 
-export function SyncDot({ pending, offline }: { pending: boolean; offline: boolean }) {
+export function SyncDot({ pending, offline, synced }: { pending: boolean; offline: boolean; synced?: boolean }) {
   const { t } = useI18n()
-  const cls = offline ? 'sync-dot--offline' : pending ? 'sync-dot--pending' : ''
-  const label = offline ? t('sync.offline') : pending ? t('sync.pending') : t('sync.synced')
+  // The dot must never look synced when a write is unconfirmed: offline > pending > synced.
+  const cls = offline ? 'sync-dot--offline' : pending ? 'sync-dot--pending' : synced ? 'sync-dot--synced' : ''
+  const label = offline ? t('sync.offline') : pending ? t('sync.pending') : synced ? t('sync.synced') : t('sync.local')
   return (
     <span className={`sync-dot ${cls}`} title={label} role="status">
       <span className="sync-dot__dot" aria-hidden="true" />

@@ -11,7 +11,7 @@ import type { Db } from './db-api'
  * - Every mutation writes an outbox row with a UUIDv7 op_id in the same transaction.
  */
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -150,10 +150,24 @@ CREATE TABLE IF NOT EXISTS outbox (
   type TEXT NOT NULL,
   payload TEXT NOT NULL,
   client_ts TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending'
+  status TEXT NOT NULL DEFAULT 'pending',
+  fail_reason TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox (status);
+
+-- v2: read-path cache of server responses (offline "last known numbers")
+CREATE TABLE IF NOT EXISTS server_cache (
+  key TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
+-- v2: local id -> server id remapping for rows created offline
+CREATE TABLE IF NOT EXISTS id_map (
+  local_id TEXT PRIMARY KEY,
+  server_id TEXT NOT NULL
+);
 `
 
 /** Run pending migrations. Idempotent; safe to call on every open. */
@@ -164,6 +178,14 @@ export function migrate(db: Db): void {
   if (current >= SCHEMA_VERSION) return
   db.transaction(() => {
     db.exec(DDL)
+    // v1 -> v2: outbox.fail_reason may already exist if a prior attempt half-ran.
+    if (current === 1) {
+      try {
+        db.exec('ALTER TABLE outbox ADD COLUMN fail_reason TEXT')
+      } catch {
+        // column already present
+      }
+    }
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`)
   })
 }
