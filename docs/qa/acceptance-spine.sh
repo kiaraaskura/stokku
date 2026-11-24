@@ -96,8 +96,8 @@ chk_num "sale line cost_at_sale" 7500 "$(row "$BODY" | jq -r '.lines[0].cost_at_
 # A missing column here 500s while both of those still return 200, so assert it.
 call GET "/sales" "" "$TOKEN"
 chk "GET /sales -> 200 (list must not 500)" "200" "$CODE"
-LIST_TOTAL=$(row "$BODY" | jq -r '(.data // .)[0].total // empty')
-LIST_ID=$(row "$BODY" | jq -r '(.data // .)[0].id // empty')
+LIST_TOTAL=$(row "$BODY" | jq -r 'if type=="array" then .[0].total else .total end // empty')
+LIST_ID=$(row "$BODY" | jq -r 'if type=="array" then .[0].id else .id end // empty')
 chk_num "GET /sales first row total matches the sale" 60000 "$LIST_TOTAL"
 chk "GET /sales lists the sale just posted" "$SALE" "$LIST_ID"
 call GET "/sales/$SALE" "" "$TOKEN"
