@@ -42,3 +42,56 @@ repository's own unit test of the A8 chain gives 172.500 / 6.900. No code change
 ### F-08 — two pnpm lockfiles (already fixed, see F-05)
 Merging alone did not produce a runnable workspace; the lockfile fix in commit f3b6965 is
 required. Anyone re-merging frontend must not restore apps/web/pnpm-lock.yaml.
+
+## Run 3 — 2026-11-24, after merging DB's 0010 auth functions
+
+Merged: `db` 2fb1f84 → `main` 8e79782 (0010 auth functions only).
+
+### Verified good
+
+| Check | Result |
+|---|---|
+| migrate as superuser, fresh DB | applied 1..10 |
+| seed | ok |
+| as role `stokku`, no app context: `auth_find_user('owner@demo.test')` | exactly 1 row (Bu Sri, `$argon2id$`) |
+| as role `stokku`: `auth_lookup_refresh('bogus')` | 0 rows |
+| function properties | `prosecdef = t`, owner `stokku_auth`, `has_function_privilege('public', …) = f` |
+| `stokku` itself | `rolsuper f`, `rolbypassrls f`; `stokku_auth` nologin + bypassrls, 0 members |
+| failed-run safety | 0010 raised, `_sqlx_migrations` stayed at 9 — no partial state |
+
+### F-09 — REGRESSION: 0010 fails on the documented dev path (blocker)
+
+`scripts/migrate.sh` on a fresh DB with the non-superuser `DATABASE_URL` from `.env.example`:
+
+```
+Applied 9/migrate views qris
+error: while executing migration 10: error returned from database: permission denied to alter role at line 779
+```
+
+`make migrate-check` (what CI runs) fails the same way:
+
+```
+error: while executing migration 10: error returned from database: permission denied to alter role
+make: *** [Makefile:96: migrate-check] Error 1
+```
+
+Impact: `make test` is red on a clean clone, and WORKSPLIT's definition of done requires
+migrate-from-zero. The security design is sound; only the runner identity is wrong. Sent back
+to DB: run privilege-needing migrations on an admin connection (e.g. `MIGRATION_DATABASE_URL`
+falling back to `DATABASE_URL`) while the API keeps connecting as non-superuser `stokku`.
+`.env.example` is Deployment's file, so the new variable needs their edit too.
+
+### F-10 — Backend branch had no commits, and its test fixture collided with 0010
+
+All of `services/api` was untracked, so nothing of the API existed on branch `backend`.
+Its `cargo build` is clean and the contract surface matches API_CONTRACT.md (error envelope
+with `fields`, `{data, next_cursor}`, `ctx.require(Cap::*)` in handlers, `qty_positive`,
+`cost_impact_warning`, `cost_at_sale`). But `cargo test` failed:
+
+```
+panicked at tests/auth_flow.rs:45:52: fixture stmt: Database(PgDatabaseError { code: "42P13",
+message: "cannot change name of input parameter \"p_token_hash\"" })
+```
+
+The temporary fixture re-creates `auth_lookup_refresh` with `p_hash` over DB's real
+`p_token_hash`. PRDTASK already said to retire the fixture once 0010 landed. Sent to Backend.
