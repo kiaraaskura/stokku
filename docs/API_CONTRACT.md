@@ -1,0 +1,149 @@
+# API Contract — Stokku v1
+
+Frozen interface between `services/api` and `apps/web`. Change only by PRDTASK or Captain note.
+Base: `/v1`. JSON. Auth: `Authorization: Bearer <access_jwt>` unless marked public.
+All money = integer rupiah. All qty = decimal string or number with max 3 dp. Dates = ISO-8601 UTC; `business_date` = `YYYY-MM-DD` in the outlet timezone.
+
+## Errors
+
+```json
+{ "error": { "code": "validation_failed", "message": "Qty harus lebih dari 0", "fields": { "qty": "min 0.001" } } }
+```
+
+Codes: `unauthorized` 401 · `forbidden` 403 · `not_found` 404 · `validation_failed` 422 · `conflict` 409 · `period_closed` 423 · `rate_limited` 429 · `internal` 500.
+Every list response: `{ "data": [...], "next_cursor": null }`. Every write response returns the full created/updated row.
+
+## Auth
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| POST | `/auth/signup` | `{email, password, name, business_name}` | public; creates tenant + owner membership; returns tokens |
+| POST | `/auth/login` | `{email, password}` | public; rate-limited |
+| POST | `/auth/refresh` | `{refresh_token}` | public; rotates; reuse ⇒ revoke all |
+| POST | `/auth/logout` | `{refresh_token}` | public |
+| GET | `/me` | — | user, tenant, outlets, role, capabilities |
+
+```json
+{ "access_token": "…", "refresh_token": "…", "expires_in": 900,
+  "user": {"id":"…","name":"…","email":"…"},
+  "tenant": {"id":"…","name":"…","tax_rate":0},
+  "outlet": {"id":"…","name":"…","timezone":"Asia/Jakarta"},
+  "role": "owner" }
+```
+
+`GET /me` adds `"capabilities": ["stock.write","sales.write","cash.write","report.read","cost.read","item.write","member.manage","export"]`. Staff never receives `cost.read`, `report.read`, `item.write`, `member.manage`, `export`.
+
+## Catalog
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/items?q=&category_id=&active=&low_stock=true&cursor=` | search name/SKU/barcode; 50/page |
+| POST | `/items` | `{name, sku?, barcodes[], category_id?, base_unit, units:[{name,factor}], sale_price, cost, min_stock, active}` |
+| GET | `/items/{id}` | item + units + barcodes + stock per outlet |
+| PATCH | `/items/{id}` | partial; price/cost changes are owner-only |
+| DELETE | `/items/{id}` | soft delete; 409 if movements exist |
+| GET | `/items/search?q=` | typeahead, max 10, supports barcode exact match first |
+| GET/POST | `/categories` | flat list, `{name, sort}` |
+| POST | `/items/import` | multipart CSV; dry-run returns per-row errors |
+
+Item shape: `{id, sku, name, category_id, base_unit, sale_price, cost_avg, min_stock, active, stock, low_stock, updated_at}`.
+`cost_avg` and any margin field are omitted for staff.
+
+## Stock
+
+| Method | Path | Body / notes |
+|---|---|---|
+| GET | `/stock-moves?item_id=&outlet_id=&from=&to=&cursor=` | 100/page, newest first |
+| GET | `/items/{id}/ledger?outlet_id=` | `{rows:[{business_date, type, qty_delta, unit_cost, balance, ref_type, ref_id, note, actor}], closing_qty}` |
+| POST | `/stock-moves` | `{item_id, outlet_id, type: "in"|"loss"|"return"|"adjust", qty_positive, unit_cost?, business_date, supplier?, note?, op_id?}` |
+| POST | `/stock-moves/{id}/reverse` | `{reason, business_date, op_id?}`; response includes `cost_impact_warning?` |
+| POST | `/stock-moves/preview-reverse/{id}` | returns the warning before confirming |
+| POST | `/opname` | `{outlet_id, category_id?, item_ids?}` → session with `system_qty` per line |
+| GET | `/opname/{id}` | session + counted values |
+| PATCH | `/opname/{id}/lines` | `{lines:[{item_id, counted_qty}]}` |
+| POST | `/opname/{id}/post` | atomic; returns `posted`, `adjustments[]` |
+
+Sale stock moves are created by `/sales`, never by the client directly.
+
+## Sales
+
+| Method | Path | Body / notes |
+|---|---|---|
+| POST | `/sales` | see below; atomic |
+| GET | `/sales?from=&to=&cursor=` | |
+| GET | `/sales/{id}` | with lines + payment |
+| POST | `/sales/{id}/void` | `{reason}`; reverses stock and money; never deletes |
+| POST | `/sales/daily` | `{outlet_id, business_date, amount, note?}` daily-total mode: revenue only, no stock moves, `mode:"daily_total"` |
+
+```json
+{ "outlet_id": "…", "business_date": "2026-11-24",
+  "customer_id": null, "discount": 0,
+  "payment_method": "cash|transfer|qris|credit",
+  "paid": true, "note": "",
+  "lines": [ {"item_id":"…","qty":2,"unit_price":15000,"discount":0} ],
+  "op_id": "0193…" }
+```
+
+Response: sale with `number`, `total`, `lines[]` (each with `cost_at_sale` for owner), `payment`, `created_moves[]`.
+Credit sale (`payment_method:"credit"` or `paid:false`) stores a receivable stub and appears in laba rugi as revenue with `unpaid: true`.
+
+## Cash book
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/cash-entries?from=&to=&category=&cursor=` | `{data:[…], totals:{in,out,net}}` |
+| POST | `/cash-entries` | `{outlet_id, direction:"in"|"out", amount, category, method, business_date, note?, ref_type?, ref_id?}` |
+| DELETE | `/cash-entries/{id}` | reversal entry, not deletion |
+| GET | `/cash-categories` | seeded + custom |
+
+## QRIS (Tier 0 — no provider integration)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/outlets/{id}/qris` | `{mode:"none"|"static_image"|"static_payload", image_url?, payload?, mdr_pct}` |
+| PUT | `/outlets/{id}/qris` | owner only; validates payload + CRC; rejects unreadable image |
+| POST | `/sales/{id}/qris/confirm` | `{amount_gross, mdr_pct?, paid_at}` → payment `{gross, mdr_amount, net, status:"paid"}`; idempotent per sale |
+
+`net = gross − round(gross * mdr_pct / 100)`. Confirm works offline on the client and syncs as an op; the server rejects a second confirm for the same sale.
+
+## Reports (owner only)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/reports/laba-rugi?from=&to=&compare=true` | `{revenue, hpp, gross_profit, opex, net_profit, unpaid_revenue, comparison:{...}, lines:[{key,label,amount,drill?}]}` |
+| GET | `/reports/laba-rugi/drill?line=revenue` | contributing transactions |
+| GET | `/reports/stock?outlet_id=` | `{at_cost, at_sale, low_stock[], dead_stock[]}` |
+| GET | `/reports/sales?from=&to=&group_by=day|item|category` | |
+| GET | `/reports/dashboard?outlet_id=` | `{today_sales, cash_position, low_stock_count, month_profit}` |
+
+Laba rugi definition is fixed: `revenue − hpp − opex = net_profit`; stock purchases are inventory, not expense.
+
+## Sync
+
+```http
+POST /sync/push
+{ "device_id":"…", "ops":[ {"op_id":"uuidv7","type":"stock_move.create|sale.create|cash_entry.create|item.update|opname.post","payload":{…},"client_ts":"…"} ] }
+→ 200 { "results":[{"op_id":"…","status":"applied|duplicate|rejected","reason":null}], "cursor": 88421 }
+```
+
+Max 50 ops; applied in one transaction ordered by `client_ts`, then `op_id`; unique `op_log.op_id` gives exactly-once.
+
+```http
+GET /sync/pull?cursor=88421&limit=500
+→ 200 { "changes":[{"table":"item","row":{…},"server_seq":88422,"deleted":false}], "cursor":88940, "has_more":false }
+```
+
+Server-written rows (QRIS confirm, settlement) arrive through the same pull path.
+
+## Access
+
+| Capability | owner | staff |
+|---|---|---|
+| stock.write, sales.write, cash.write | ✓ | ✓ |
+| cost.read, report.read, item.write, member.manage, export | ✓ | — |
+
+Enforced in handlers, not just the UI. Staff token hitting a restricted endpoint gets `403 forbidden`.
+
+## Ops format
+
+Every mutating client call carries a client-generated UUIDv7 `op_id` (server generates one if absent). Same `op_id` twice = `duplicate`, no second effect. Local SQLite writes the op to an outbox in the same transaction as the local row.
