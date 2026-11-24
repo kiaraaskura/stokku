@@ -7,23 +7,30 @@ name: stokku
 services:
   postgres:
     image: postgres:16
+    # Bootstrap superuser is "postgres". The app connects as the
+    # non-superuser role "stokku" (created by infra/pg-init.sh) so forced
+    # RLS actually binds the API — a superuser API would see all tenants.
     environment:
-      POSTGRES_USER: stokku
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: stokku
+      STOKKU_DB_PASSWORD: ${STOKKU_DB_PASSWORD:?Set STOKKU_DB_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./infra/pg-init.sh:/docker-entrypoint-initdb.d/10-stokku-role.sh:ro
     # 55443 on the host so the shared dev Postgres (55442) is never touched.
     ports:
       - "55443:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U stokku -d stokku"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stokku"]
       interval: 5s
       timeout: 3s
       retries: 12
 
   # One-shot tool (profile "tools"): runs DB's migrations/seed inside the
-  # compose network. Started explicitly by `make up`.
+  # compose network, AS THE SUPERUSER (migrations need extensions like
+  # citext/pg_trgm; tables end up owned by postgres, and the stokku role
+  # gets DML rights via default privileges in infra/pg-init.sh).
   migrate:
     build:
       context: .
@@ -31,7 +38,7 @@ services:
     profiles: ["tools"]
     restart: "no"
     environment:
-      DATABASE_URL: postgres://stokku:${POSTGRES_PASSWORD}@postgres:5432/stokku
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/stokku
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,7 +48,7 @@ services:
       context: .
       dockerfile: infra/api.Dockerfile
     environment:
-      DATABASE_URL: postgres://stokku:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/stokku
+      DATABASE_URL: postgres://stokku:${STOKKU_DB_PASSWORD}@postgres:5432/stokku
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
       RUST_LOG: ${RUST_LOG:-info}

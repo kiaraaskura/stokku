@@ -103,6 +103,7 @@ jobs:
     timeout-minutes: 10
     env:
       POSTGRES_PASSWORD: ci
+      STOKKU_DB_PASSWORD: ci
       JWT_SECRET: ci-not-a-real-secret
       APP_BASE_URL: http://localhost:5173
     steps:

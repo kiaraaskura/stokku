@@ -37,13 +37,23 @@ mkdir -p "$BACKUP_DIR"
 stamp=$(date -u +%Y%m%d-%H%M%S)
 file="$BACKUP_DIR/stokku-$stamp.dump"
 
+# Dump. Forced RLS (by design, DB's T-102) blocks a non-superuser dump role
+# from reading every table, so on failure retry as a superuser:
+# BACKUP_DATABASE_URL, else DATABASE_URL with the user swapped to
+# BACKUP_SUPER_USER (default "postgres"; trust-auth dev clusters accept it
+# without a password — set BACKUP_DATABASE_URL when yours needs one).
+dump_url="${BACKUP_DATABASE_URL:-$DATABASE_URL}"
 echo ">> pg_dump (custom format) → $file"
-pg_dump "$DATABASE_URL" --format=custom --file="$file"
+if ! pg_dump "$dump_url" --format=custom --file="$file"; then
+  echo ">> plain dump failed (likely forced RLS), retrying as superuser"
+  super_url=$(sed -E 's#^(postgres(ql)?://)[^@/]*@#\1'"${BACKUP_SUPER_USER:-postgres}"'@#' <<<"$dump_url")
+  pg_dump "$super_url" --format=custom --file="$file"
+fi
 
 # 7-day retention: delete backups older than KEEP_DAYS (prints what it drops).
 find "$BACKUP_DIR" -name 'stokku-*.dump' -mtime +"$KEEP_DAYS" -print -delete
 
 size=$(du -h "$file" | cut -f1)
 echo ">> backup done: $file ($size), retention ${KEEP_DAYS}d"
-echo ">> restore with:"
+echo ">> restore with (use a superuser URL if the dump needed one):"
 echo "   pg_restore --clean --if-exists -d \"\$DATABASE_URL\" $file"
