@@ -68,3 +68,29 @@ The dev Postgres is the shared instance on `127.0.0.1:55442`, database
 scripts/seed.sh    # idempotent demo tenant "Warung Bu Sri" (run twice to prove it)
 scripts/verify.sh  # all proof queries: ledger projection, change log, RLS, laba rugi
 ```
+
+## Auth functions (login/refresh under forced RLS)
+
+`auth_find_user(email)`, `auth_lookup_refresh(token_hash)`,
+`auth_revoke_tokens(user_id)` (migration 0010, PRDTASK-ratified): the ONLY
+reads/writes allowed on `user_app`/`refresh_token` before
+`set_app_context()` has run. Call them for login and refresh, then set the
+context and use normal queries.
+
+- They are `SECURITY DEFINER` owned by a dedicated role `stokku_auth`
+  (NOLOGIN, BYPASSRLS, SELECT on `user_app`, SELECT/UPDATE on
+  `refresh_token`, granted to nobody) — SECURITY DEFINER alone would not
+  suffice, because the app role owns the tables on a locally migrated
+  database and FORCED RLS binds even the owner.
+- `EXECUTE` is granted to `stokku` only (revoked from PUBLIC). The pinned
+  `search_path` is `public, pg_temp`.
+- `auth_revoke_tokens(user_id)` revokes every still-active token of that
+  user — call it only for the user the API has authenticated or caught in
+  reuse detection; the function itself does not check who is calling.
+- They are deliberately out of `change_log` (SELECTs fire no triggers and
+  `refresh_token` has none), like `refresh_token` itself.
+- Migration 0010 must run as a **superuser** (only a superuser can grant
+  BYPASSRLS). Compose and CI already run migrations as the superuser; for a
+  local database use the superuser once, e.g.
+  `DATABASE_URL=postgres://postgres@127.0.0.1:55442/<db> ./scripts/migrate.sh`.
+  It fails with a clear error if run by a role that cannot set this up.
