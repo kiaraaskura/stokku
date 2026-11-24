@@ -76,7 +76,11 @@ where
             let s = match &other {
                 Value::Number(n) => n.to_string(),
                 Value::String(s) => s.trim().replace(',', "."),
-                _ => return Err(serde::de::Error::custom("qty harus angka atau string desimal")),
+                _ => {
+                    return Err(serde::de::Error::custom(
+                        "qty harus angka atau string desimal",
+                    ))
+                }
             };
             let dec = Decimal::from_str_exact(&s)
                 .map_err(|_| serde::de::Error::custom("qty bukan angka desimal yang valid"))?;
@@ -96,7 +100,11 @@ pub async fn create(
 ) -> ApiResult<Json<Value>> {
     ctx.require(Cap::ItemWrite)?;
     if body.name.trim().is_empty() {
-        return Err(ApiError::validation_field("Nama wajib diisi", "name", "tidak boleh kosong"));
+        return Err(ApiError::validation_field(
+            "Nama wajib diisi",
+            "name",
+            "tidak boleh kosong",
+        ));
     }
     if body.base_unit.trim().is_empty() {
         return Err(ApiError::validation_field(
@@ -275,7 +283,9 @@ pub async fn list(
 
     let has_more = rows.len() > 50;
     let next_cursor = if has_more {
-        rows.get(49).map(|r| r.try_get::<Uuid, _>("id")).transpose()?
+        rows.get(49)
+            .map(|r| r.try_get::<Uuid, _>("id"))
+            .transpose()?
     } else {
         None
     };
@@ -294,10 +304,13 @@ pub async fn get_one(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Value>> {
     let mut tx = begin_tx(&st.pool, &ctx).await?;
-    let row = sqlx::query(&format!("{} where i.id = $1 and i.deleted_at is null", item_core_select()))
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let row = sqlx::query(&format!(
+        "{} where i.id = $1 and i.deleted_at is null",
+        item_core_select()
+    ))
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let row = row.ok_or_else(|| ApiError::NotFound("Item tidak ditemukan".into()))?;
     let mut v = item_row_json(&row, ctx.can_read_cost())?;
 
@@ -342,8 +355,16 @@ pub async fn update(
     ctx.require(Cap::ItemWrite)?;
     if let Some(fields) = body.as_object() {
         const KNOWN: [&str; 10] = [
-            "name", "sku", "category_id", "base_unit", "sale_price", "cost", "min_stock",
-            "active", "barcodes", "units",
+            "name",
+            "sku",
+            "category_id",
+            "base_unit",
+            "sale_price",
+            "cost",
+            "min_stock",
+            "active",
+            "barcodes",
+            "units",
         ];
         if fields.keys().any(|k| !KNOWN.contains(&k.as_str())) {
             let unknown: Vec<&String> = fields
@@ -352,18 +373,21 @@ pub async fn update(
                 .collect();
             return Err(ApiError::validation(format!(
                 "Field tidak dikenal: {}",
-                unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                unknown
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
     }
 
     let mut tx = begin_tx(&st.pool, &ctx).await?;
-    let exists: Option<Uuid> = sqlx::query_scalar(
-        "select id from item where id = $1 and deleted_at is null",
-    )
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let exists: Option<Uuid> =
+        sqlx::query_scalar("select id from item where id = $1 and deleted_at is null")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
     if exists.is_none() {
         return Err(ApiError::NotFound("Item tidak ditemukan".into()));
     }
@@ -379,7 +403,11 @@ pub async fn update(
     if let Some(v) = obj.get("name") {
         let s = v.as_str().map(str::trim).unwrap_or_default();
         if s.is_empty() {
-            return Err(ApiError::validation_field("Nama wajib diisi", "name", "tidak boleh kosong"));
+            return Err(ApiError::validation_field(
+                "Nama wajib diisi",
+                "name",
+                "tidak boleh kosong",
+            ));
         }
         push("name", json!(s), &mut sets, &mut binds);
     }
@@ -415,9 +443,9 @@ pub async fn update(
         push("base_unit", json!(s), &mut sets, &mut binds);
     }
     if let Some(v) = obj.get("sale_price") {
-        let p = v
-            .as_i64()
-            .ok_or_else(|| ApiError::validation_field("Harga jual harus angka bulat", "sale_price", "integer"))?;
+        let p = v.as_i64().ok_or_else(|| {
+            ApiError::validation_field("Harga jual harus angka bulat", "sale_price", "integer")
+        })?;
         if p < 0 {
             return Err(ApiError::validation_field(
                 "Harga jual tidak boleh negatif",
@@ -428,9 +456,9 @@ pub async fn update(
         push("sale_price", json!(p), &mut sets, &mut binds);
     }
     if let Some(v) = obj.get("cost") {
-        let c = v
-            .as_i64()
-            .ok_or_else(|| ApiError::validation_field("Harga beli harus angka bulat", "cost", "integer"))?;
+        let c = v.as_i64().ok_or_else(|| {
+            ApiError::validation_field("Harga beli harus angka bulat", "cost", "integer")
+        })?;
         if c < 0 {
             return Err(ApiError::validation_field(
                 "Harga beli tidak boleh negatif",
@@ -453,7 +481,12 @@ pub async fn update(
         push("min_stock", json!(d.to_string()), &mut sets, &mut binds);
     }
     if let Some(v) = obj.get("active") {
-        push("active", json!(v.as_bool().unwrap_or(true)), &mut sets, &mut binds);
+        push(
+            "active",
+            json!(v.as_bool().unwrap_or(true)),
+            &mut sets,
+            &mut binds,
+        );
     }
 
     if sets.is_empty() && obj.get("barcodes").is_none() && obj.get("units").is_none() {
@@ -461,7 +494,11 @@ pub async fn update(
     }
 
     if !sets.is_empty() {
-        let sql = format!("update item set {} where id = ${}", sets.join(", "), binds.len() + 1);
+        let sql = format!(
+            "update item set {} where id = ${}",
+            sets.join(", "),
+            binds.len() + 1
+        );
         let mut query = sqlx::query(&sql);
         for b in &binds {
             query = bind_value(query, b);
@@ -585,13 +622,15 @@ pub async fn soft_delete(
         .await?;
     if moves > 0 {
         return Err(ApiError::Conflict(
-            "Item tidak bisa dihapus karena sudah ada pergerakan stok. Nonaktifkan saja itemnya.".into(),
+            "Item tidak bisa dihapus karena sudah ada pergerakan stok. Nonaktifkan saja itemnya."
+                .into(),
         ));
     }
-    let res = sqlx::query("update item set deleted_at = now() where id = $1 and deleted_at is null")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    let res =
+        sqlx::query("update item set deleted_at = now() where id = $1 and deleted_at is null")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
     tx.commit().await?;
     if res.rows_affected() == 0 {
         return Err(ApiError::NotFound("Item tidak ditemukan".into()));
@@ -624,7 +663,10 @@ pub async fn search(
     .fetch_all(&mut *tx)
     .await?;
 
-    let exclude: Vec<Uuid> = barcode_rows.iter().filter_map(|r| r.try_get("id").ok()).collect();
+    let exclude: Vec<Uuid> = barcode_rows
+        .iter()
+        .filter_map(|r| r.try_get("id").ok())
+        .collect();
 
     let base = format!(
         "{} where i.deleted_at is null and i.name ilike '%'||$1||'%'",
@@ -636,11 +678,13 @@ pub async fn search(
             .fetch_all(&mut *tx)
             .await?
     } else {
-        sqlx::query(&format!("{base} and i.id <> all($2) order by i.name limit 9"))
-            .bind(needle)
-            .bind(exclude)
-            .fetch_all(&mut *tx)
-            .await?
+        sqlx::query(&format!(
+            "{base} and i.id <> all($2) order by i.name limit 9"
+        ))
+        .bind(needle)
+        .bind(exclude)
+        .fetch_all(&mut *tx)
+        .await?
     };
 
     tx.commit().await?;
@@ -664,8 +708,9 @@ pub async fn ledger(
     Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
     let outlet_id = match q.get("outlet_id") {
-        Some(s) => Some(Uuid::parse_str(s)
-            .map_err(|_| ApiError::validation("outlet_id tidak valid"))?),
+        Some(s) => {
+            Some(Uuid::parse_str(s).map_err(|_| ApiError::validation("outlet_id tidak valid"))?)
+        }
         None => None,
     };
 

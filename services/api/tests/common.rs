@@ -91,7 +91,11 @@ pub async fn fresh_db(tag: &str) -> PgPool {
 }
 
 pub async fn drop_db(pool: PgPool) {
-    let dbname = pool.connect_options().get_database().unwrap_or("").to_string();
+    let dbname = pool
+        .connect_options()
+        .get_database()
+        .unwrap_or("")
+        .to_string();
     pool.close().await;
     let Some(admin) = admin_url() else { return };
     let admin = admin.trim_end_matches('/');

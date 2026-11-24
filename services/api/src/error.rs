@@ -41,7 +41,9 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message, fields) = match &self {
-            ApiError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, "unauthorized", m.clone(), None),
+            ApiError::Unauthorized(m) => {
+                (StatusCode::UNAUTHORIZED, "unauthorized", m.clone(), None)
+            }
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, "forbidden", m.clone(), None),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, "not_found", m.clone(), None),
             ApiError::Validation { message, fields } => (
@@ -131,9 +133,7 @@ impl From<sqlx::Error> for ApiError {
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| format!("Nilai tidak valid: {message}")),
             ),
-            Some("23503") => {
-                ApiError::validation(format!("Referensi tidak valid: {message}"))
-            }
+            Some("23503") => ApiError::validation(format!("Referensi tidak valid: {message}")),
             _ => ApiError::Internal(format!("{e:#}")),
         }
     }

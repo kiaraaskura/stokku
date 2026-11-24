@@ -80,13 +80,14 @@ pub async fn create(
 
     let mut tx = begin_tx(&st.pool, &ctx).await?;
     if let Some(op_id) = body.op_id {
-        let dup: Option<Value> =
-            sqlx::query_scalar("select result from op_log where op_id = $1")
-                .bind(op_id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let dup: Option<Value> = sqlx::query_scalar("select result from op_log where op_id = $1")
+            .bind(op_id)
+            .fetch_optional(&mut *tx)
+            .await?;
         if let Some(r) = dup {
-            return Ok(Json(json!({ "duplicate": true, "op_id": op_id, "result": r })));
+            return Ok(Json(
+                json!({ "duplicate": true, "op_id": op_id, "result": r }),
+            ));
         }
     }
     let outlet_id = match body.outlet_id {
@@ -158,7 +159,11 @@ pub async fn list(
         Some(s) => Some(parse_date(s)?),
         None => None,
     };
-    let category = q.category.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let category = q
+        .category
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     let mut tx = begin_tx(&st.pool, &ctx).await?;
     let rows = sqlx::query(
@@ -194,7 +199,9 @@ pub async fn list(
 
     let has_more = rows.len() > 100;
     let next_cursor = if has_more {
-        rows.get(99).map(|r| r.try_get::<Uuid, _>("id")).transpose()?
+        rows.get(99)
+            .map(|r| r.try_get::<Uuid, _>("id"))
+            .transpose()?
     } else {
         None
     };
@@ -241,7 +248,9 @@ pub async fn reversal_delete(
     let orig = orig.ok_or_else(|| ApiError::NotFound("Catatan kas tidak ditemukan".into()))?;
 
     if orig.try_get::<Option<String>, _>("ref_type")?.as_deref() == Some("reversal") {
-        return Err(ApiError::Conflict("Pembalikan tidak bisa dibalik lagi".into()));
+        return Err(ApiError::Conflict(
+            "Pembalikan tidak bisa dibalik lagi".into(),
+        ));
     }
     let reversed: i64 = sqlx::query_scalar(
         "select count(*) from cash_entry where ref_type = 'reversal' and ref_id = $1",
@@ -250,7 +259,9 @@ pub async fn reversal_delete(
     .fetch_one(&mut *tx)
     .await?;
     if reversed > 0 {
-        return Err(ApiError::Conflict("Catatan kas ini sudah dibatalkan".into()));
+        return Err(ApiError::Conflict(
+            "Catatan kas ini sudah dibatalkan".into(),
+        ));
     }
 
     let direction = if orig.try_get::<String, _>("direction")? == "in" {

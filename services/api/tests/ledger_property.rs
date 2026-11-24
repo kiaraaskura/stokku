@@ -63,21 +63,44 @@ async fn stock_level_projection_matches_sum_of_moves() {
     let item_b = now_v7();
 
     let mut tx = pool.begin().await.unwrap();
-    set_app_context(&mut tx, Some(tenant), Some(owner)).await.unwrap();
+    set_app_context(&mut tx, Some(tenant), Some(owner))
+        .await
+        .unwrap();
     sqlx::query("insert into tenant (id, name) values ($1, 'Toko Uji Properti')")
-        .bind(tenant).execute(&mut *tx).await.unwrap();
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     sqlx::query("insert into outlet (id, tenant_id, name) values ($1, $2, 'Outlet Uji')")
-        .bind(outlet).bind(tenant).execute(&mut *tx).await.unwrap();
-    sqlx::query("insert into user_app (id, email, password_hash, name) values ($1, $2, 'x', 'Penguji')")
-        .bind(owner).bind(format!("prop-{owner}@test.local")).execute(&mut *tx).await.unwrap();
+        .bind(outlet)
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into user_app (id, email, password_hash, name) values ($1, $2, 'x', 'Penguji')",
+    )
+    .bind(owner)
+    .bind(format!("prop-{owner}@test.local"))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     sqlx::query("insert into membership (tenant_id, user_id, role) values ($1, $2, 'owner')")
-        .bind(tenant).bind(owner).execute(&mut *tx).await.unwrap();
+        .bind(tenant)
+        .bind(owner)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     for item in [item_a, item_b] {
         sqlx::query(
             "insert into item (id, tenant_id, name, base_unit, sale_price, cost_avg)
              values ($1, $2, 'Item Uji', 'pcs', 10000, 0)",
         )
-        .bind(item).bind(tenant).execute(&mut *tx).await.unwrap();
+        .bind(item)
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     }
     tx.commit().await.unwrap();
 
@@ -87,24 +110,38 @@ async fn stock_level_projection_matches_sum_of_moves() {
     let kinds = ["in", "in", "in", "sale", "sale", "loss", "adjust", "return"];
 
     let mut tx = pool.begin().await.unwrap();
-    set_app_context(&mut tx, Some(tenant), Some(owner)).await.unwrap();
-    for i in 0..OPS {
-        let kind = rng.pick(&kinds);
-        let item = if rng.next().is_multiple_of(2) { item_a } else { item_b };
-        let qty = rng.qty();
-        let cost = rng.cost();
-        let signed = if kind == "in" || kind == "return" { qty } else { -qty };
-
-        let old_qty: Decimal = sqlx::query_scalar(
-            "select coalesce(sum(qty), 0) from stock_level where item_id = $1",
-        )
-        .bind(item)
-        .fetch_one(&mut *tx)
+    set_app_context(&mut tx, Some(tenant), Some(owner))
         .await
         .unwrap();
+    for i in 0..OPS {
+        let kind = rng.pick(&kinds);
+        let item = if rng.next().is_multiple_of(2) {
+            item_a
+        } else {
+            item_b
+        };
+        let qty = rng.qty();
+        let cost = rng.cost();
+        let signed = if kind == "in" || kind == "return" {
+            qty
+        } else {
+            -qty
+        };
+
+        let old_qty: Decimal =
+            sqlx::query_scalar("select coalesce(sum(qty), 0) from stock_level where item_id = $1")
+                .bind(item)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
 
         let new_avg = if kind == "in" {
-            Some(avg_after_in(old_qty, cur_avg_item(&mut tx, item).await, qty, cost))
+            Some(avg_after_in(
+                old_qty,
+                cur_avg_item(&mut tx, item).await,
+                qty,
+                cost,
+            ))
         } else {
             None
         };
@@ -147,30 +184,45 @@ async fn stock_level_projection_matches_sum_of_moves() {
 
     // final full check incl. cost sanity (must run with the RLS context)
     let mut tx = pool.begin().await.unwrap();
-    set_app_context(&mut tx, Some(tenant), Some(owner)).await.unwrap();
+    set_app_context(&mut tx, Some(tenant), Some(owner))
+        .await
+        .unwrap();
     for item in [item_a, item_b] {
-        let sum: Decimal = sqlx::query_scalar(
-            "select coalesce(sum(qty), 0) from stock_move where item_id = $1",
-        )
-        .bind(item).fetch_one(&mut *tx).await.unwrap();
+        let sum: Decimal =
+            sqlx::query_scalar("select coalesce(sum(qty), 0) from stock_move where item_id = $1")
+                .bind(item)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
         let level: Decimal = sqlx::query_scalar(
             "select coalesce((select qty from stock_level where item_id = $1), 0)",
         )
-        .bind(item).fetch_one(&mut *tx).await.unwrap();
+        .bind(item)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
         assert_eq!(sum, level);
         let cost: i64 = sqlx::query_scalar("select cost_avg from item where id = $1")
-            .bind(item).fetch_one(&mut *tx).await.unwrap();
+            .bind(item)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
         assert!(cost >= 0);
     }
     tx.commit().await.unwrap();
 
     // negative stock is allowed (flagged, never blocked): force one
     let mut tx = pool.begin().await.unwrap();
-    set_app_context(&mut tx, Some(tenant), Some(owner)).await.unwrap();
-    let cur: Decimal = sqlx::query_scalar(
-        "select qty from stock_level where item_id = $1 and outlet_id = $2",
-    )
-    .bind(item_a).bind(outlet).fetch_one(&mut *tx).await.unwrap();
+    set_app_context(&mut tx, Some(tenant), Some(owner))
+        .await
+        .unwrap();
+    let cur: Decimal =
+        sqlx::query_scalar("select qty from stock_level where item_id = $1 and outlet_id = $2")
+            .bind(item_a)
+            .bind(outlet)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
     // post_move takes the SIGNED delta (the HTTP layer applies the sign)
     let big_loss = -(cur + Decimal::new(10_000, 3)); // far beyond stock
     post_move(
@@ -194,17 +246,27 @@ async fn stock_level_projection_matches_sum_of_moves() {
     .expect("negative stock must be allowed");
     tx.commit().await.unwrap();
     let mut tx = pool.begin().await.unwrap();
-    set_app_context(&mut tx, Some(tenant), Some(owner)).await.unwrap();
-    let level: Decimal = sqlx::query_scalar(
-        "select qty from stock_level where item_id = $1 and outlet_id = $2",
-    )
-    .bind(item_a).bind(outlet).fetch_one(&mut *tx).await.unwrap();
+    set_app_context(&mut tx, Some(tenant), Some(owner))
+        .await
+        .unwrap();
+    let level: Decimal =
+        sqlx::query_scalar("select qty from stock_level where item_id = $1 and outlet_id = $2")
+            .bind(item_a)
+            .bind(outlet)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
     assert!(level < Decimal::ZERO, "level {level} should be negative");
-    let flagged: i64 = sqlx::query_scalar(
-        "select count(*) from stock_level where outlet_id = $1 and qty <= 0",
-    )
-    .bind(outlet).fetch_one(&mut *tx).await.unwrap();
-    assert!(flagged >= 1, "negative stock must be flagged by the qty <= 0 index");
+    let flagged: i64 =
+        sqlx::query_scalar("select count(*) from stock_level where outlet_id = $1 and qty <= 0")
+            .bind(outlet)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert!(
+        flagged >= 1,
+        "negative stock must be flagged by the qty <= 0 index"
+    );
     tx.commit().await.unwrap();
 
     common::drop_db(pool).await;

@@ -19,8 +19,9 @@ pub fn today_jakarta() -> NaiveDate {
 }
 
 pub fn parse_date(s: &str) -> ApiResult<NaiveDate> {
-    NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|_| ApiError::validation_field("Tanggal tidak valid", "business_date", "format YYYY-MM-DD"))
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+        ApiError::validation_field("Tanggal tidak valid", "business_date", "format YYYY-MM-DD")
+    })
 }
 
 /// Deserialize a qty from a JSON number or a decimal string (API contract:
@@ -33,7 +34,11 @@ where
     let s = match &v {
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.trim().replace(',', "."),
-        _ => return Err(serde::de::Error::custom("qty harus angka atau string desimal")),
+        _ => {
+            return Err(serde::de::Error::custom(
+                "qty harus angka atau string desimal",
+            ))
+        }
     };
     let dec = Decimal::from_str_exact(&s)
         .map_err(|_| serde::de::Error::custom("qty bukan angka desimal yang valid"))?;
@@ -41,7 +46,9 @@ where
         return Err(serde::de::Error::custom("qty maksimal 3 angka desimal"));
     }
     if dec.abs() >= Decimal::from_str_exact("100000000000000").unwrap_or(Decimal::MAX) {
-        return Err(serde::de::Error::custom("qty terlalu besar (maks NUMERIC(14,3))"));
+        return Err(serde::de::Error::custom(
+            "qty terlalu besar (maks NUMERIC(14,3))",
+        ));
     }
     Ok(dec)
 }
@@ -64,11 +71,10 @@ pub fn dec_to_rupiah(d: &Decimal) -> i64 {
 
 /// Default outlet for the current tenant (single-outlet MVP).
 pub async fn default_outlet_id(tx: &mut PgConnection) -> ApiResult<Uuid> {
-    let id: Option<Uuid> = sqlx::query_scalar(
-        "select id from outlet order by created_at, id limit 1",
-    )
-    .fetch_optional(tx)
-    .await?;
+    let id: Option<Uuid> =
+        sqlx::query_scalar("select id from outlet order by created_at, id limit 1")
+            .fetch_optional(tx)
+            .await?;
     id.ok_or_else(|| ApiError::NotFound("Outlet tidak ditemukan".into()))
 }
 

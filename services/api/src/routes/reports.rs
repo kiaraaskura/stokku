@@ -87,8 +87,7 @@ async fn totals_for(
 
 fn default_range() -> (NaiveDate, NaiveDate) {
     let today = today_jakarta();
-    let from = NaiveDate::from_ymd_opt(today.year(), today.month(), 1)
-        .unwrap_or(today);
+    let from = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
     let to = next_month_first(from) - chrono::Duration::days(1);
     (from, to)
 }
@@ -195,7 +194,9 @@ pub async fn drill(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| ApiError::validation_field("Parameter line wajib diisi", "line", "revenue | hpp | opex"))?;
+        .ok_or_else(|| {
+            ApiError::validation_field("Parameter line wajib diisi", "line", "revenue | hpp | opex")
+        })?;
     if !matches!(line, "revenue" | "hpp" | "opex") {
         return Err(ApiError::validation_field(
             "line harus revenue, hpp, atau opex",
@@ -212,16 +213,17 @@ pub async fn drill(
     let mut tx = begin_tx(&st.pool, &ctx).await?;
     let data = match line {
         "revenue" => {
-            let rows: Vec<(uuid::Uuid, Option<String>, NaiveDate, i64, bool, bool)> = sqlx::query_as(
-                "select id, number, business_date, total, paid, mode
+            let rows: Vec<(uuid::Uuid, Option<String>, NaiveDate, i64, bool, String)> =
+                sqlx::query_as(
+                    "select id, number, business_date, total, paid, mode
                  from sale
                  where voided_at is null and business_date between $1 and $2
                  order by business_date, id",
-            )
-            .bind(from)
-            .bind(to)
-            .fetch_all(&mut *tx)
-            .await?;
+                )
+                .bind(from)
+                .bind(to)
+                .fetch_all(&mut *tx)
+                .await?;
             rows.iter()
                 .map(|(id, number, date, total, paid, mode)| {
                     json!({
@@ -233,7 +235,14 @@ pub async fn drill(
                 .collect::<Vec<_>>()
         }
         "hpp" => {
-            let rows: Vec<(uuid::Uuid, Option<String>, NaiveDate, String, rust_decimal::Decimal, i64)> = sqlx::query_as(
+            let rows: Vec<(
+                uuid::Uuid,
+                Option<String>,
+                NaiveDate,
+                String,
+                rust_decimal::Decimal,
+                i64,
+            )> = sqlx::query_as(
                 "select s.id, s.number, s.business_date, i.name, l.qty, l.cost_at_sale
                  from sale s
                  join sale_line l on l.sale_id = s.id
@@ -281,5 +290,7 @@ pub async fn drill(
         }
     };
     tx.commit().await?;
-    Ok(Json(json!({ "line": line, "from": from, "to": to, "data": data, "next_cursor": null })))
+    Ok(Json(
+        json!({ "line": line, "from": from, "to": to, "data": data, "next_cursor": null }),
+    ))
 }

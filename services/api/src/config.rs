@@ -14,12 +14,11 @@ impl AppConfig {
             .unwrap_or_else(|_| panic!("DATABASE_URL wajib diisi (lihat .env.example)"));
         let jwt_secret = std::env::var("JWT_SECRET")
             .unwrap_or_else(|_| panic!("JWT_SECRET wajib diisi (lihat .env.example)"));
-        let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| {
-            match std::env::var("PORT") {
+        let bind_addr =
+            std::env::var("BIND_ADDR").unwrap_or_else(|_| match std::env::var("PORT") {
                 Ok(p) => format!("0.0.0.0:{p}"),
                 Err(_) => "0.0.0.0:8080".to_string(),
-            }
-        });
+            });
         Self {
             database_url,
             jwt_secret,

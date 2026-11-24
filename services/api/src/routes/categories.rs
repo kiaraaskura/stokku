@@ -12,11 +12,10 @@ use crate::util::{begin_tx, now_v7};
 /// GET /v1/categories — flat list.
 pub async fn list(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<Json<Value>> {
     let mut tx = begin_tx(&st.pool, &ctx).await?;
-    let rows: Vec<(uuid::Uuid, String, i32)> = sqlx::query_as(
-        "select id, name, sort from category order by sort, name",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
+    let rows: Vec<(uuid::Uuid, String, i32)> =
+        sqlx::query_as("select id, name, sort from category order by sort, name")
+            .fetch_all(&mut *tx)
+            .await?;
     tx.commit().await?;
     Ok(Json(json!({
         "data": rows.iter().map(|(id, name, sort)| json!({
@@ -57,13 +56,13 @@ pub async fn create(
     .bind(body.sort.unwrap_or(0))
     .execute(&mut *tx)
     .await?;
-    let row: Option<(uuid::Uuid, String, i32)> = sqlx::query_as(
-        "select id, name, sort from category where id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let row: Option<(uuid::Uuid, String, i32)> =
+        sqlx::query_as("select id, name, sort from category where id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
     tx.commit().await?;
-    let (id, name, sort) = row.ok_or_else(|| ApiError::Internal("kategori hilang setelah insert".into()))?;
+    let (id, name, sort) =
+        row.ok_or_else(|| ApiError::Internal("kategori hilang setelah insert".into()))?;
     Ok(Json(json!({ "id": id, "name": name, "sort": sort })))
 }

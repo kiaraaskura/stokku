@@ -4,13 +4,13 @@
 //!   STOKKU_TEST_ADMIN_URL=postgres://user@127.0.0.1:PORT/postgres
 
 use axum::extract::State;
+use axum::response::IntoResponse;
 use axum::Json;
 use stokku_api::auth::{login, refresh, signup, LoginReq, RefreshReq, SignupReq};
 use stokku_api::config::AppConfig;
 use stokku_api::ctx::{AuthCtx, Role};
 use stokku_api::routes::reports::{laba_rugi, LabaRugiQuery};
 use stokku_api::state::AppState;
-use axum::response::IntoResponse;
 use uuid::Uuid;
 
 mod common;
@@ -84,23 +84,38 @@ async fn signup_login_refresh_rotation_reuse_and_capabilities() {
     assert_eq!(resp.status(), 401);
 
     // refresh rotation
-    let Json(rv) = refresh(State(state.clone()), Json(RefreshReq { refresh_token: refresh2.clone() }))
-        .await
-        .expect("refresh ok");
+    let Json(rv) = refresh(
+        State(state.clone()),
+        Json(RefreshReq {
+            refresh_token: refresh2.clone(),
+        }),
+    )
+    .await
+    .expect("refresh ok");
     let refresh3: String = serde_json::from_value(rv["refresh_token"].clone()).unwrap();
     assert_ne!(refresh2, refresh3);
 
     // REUSE of the rotated refresh2 ⇒ revoke all
-    let err = refresh(State(state.clone()), Json(RefreshReq { refresh_token: refresh2 }))
-        .await
-        .expect_err("reuse must fail");
+    let err = refresh(
+        State(state.clone()),
+        Json(RefreshReq {
+            refresh_token: refresh2,
+        }),
+    )
+    .await
+    .expect_err("reuse must fail");
     let resp = err.into_response();
     assert_eq!(resp.status(), 401);
 
     // ...and the family is dead: the newest token is revoked too
-    let err = refresh(State(state.clone()), Json(RefreshReq { refresh_token: refresh3 }))
-        .await
-        .expect_err("revoked token must fail");
+    let err = refresh(
+        State(state.clone()),
+        Json(RefreshReq {
+            refresh_token: refresh3,
+        }),
+    )
+    .await
+    .expect_err("revoked token must fail");
     let resp = err.into_response();
     assert_eq!(resp.status(), 401);
 
@@ -110,12 +125,14 @@ async fn signup_login_refresh_rotation_reuse_and_capabilities() {
     stokku_api::util::set_app_context(&mut tx, Some(tenant_id), Some(owner_id))
         .await
         .unwrap();
-    sqlx::query("insert into user_app (id, email, password_hash, name) values ($1, $2, 'x', 'Staf Uji')")
-        .bind(staff_id)
-        .bind(format!("staff-{}@test.local", Uuid::now_v7().simple()))
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    sqlx::query(
+        "insert into user_app (id, email, password_hash, name) values ($1, $2, 'x', 'Staf Uji')",
+    )
+    .bind(staff_id)
+    .bind(format!("staff-{}@test.local", Uuid::now_v7().simple()))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     sqlx::query("insert into membership (tenant_id, user_id, role) values ($1, $2, 'staff')")
         .bind(tenant_id)
         .bind(staff_id)
@@ -137,7 +154,11 @@ async fn signup_login_refresh_rotation_reuse_and_capabilities() {
     let err = laba_rugi(
         State(state.clone()),
         staff_ctx.clone(),
-        axum::extract::Query(LabaRugiQuery { from: None, to: None, compare: None }),
+        axum::extract::Query(LabaRugiQuery {
+            from: None,
+            to: None,
+            compare: None,
+        }),
     )
     .await
     .expect_err("staff must get 403 on laba rugi");
@@ -153,7 +174,11 @@ async fn signup_login_refresh_rotation_reuse_and_capabilities() {
     let Json(rep) = laba_rugi(
         State(state),
         owner_ctx,
-        axum::extract::Query(LabaRugiQuery { from: None, to: None, compare: Some(true) }),
+        axum::extract::Query(LabaRugiQuery {
+            from: None,
+            to: None,
+            compare: Some(true),
+        }),
     )
     .await
     .expect("owner can read laba rugi");

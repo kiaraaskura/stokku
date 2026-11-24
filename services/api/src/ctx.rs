@@ -1,5 +1,5 @@
-use axum::http::request::Parts;
 use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -112,7 +112,10 @@ pub struct AccessClaims {
 impl FromRequestParts<AppState> for AuthCtx {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let header = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)

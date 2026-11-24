@@ -9,7 +9,9 @@ use axum::Router;
 
 use crate::{auth, state::AppState};
 
-async fn health(axum::extract::State(st): axum::extract::State<AppState>) -> impl axum::response::IntoResponse {
+async fn health(
+    axum::extract::State(st): axum::extract::State<AppState>,
+) -> impl axum::response::IntoResponse {
     let db_up = sqlx::query_scalar::<_, i32>("select 1")
         .fetch_one(&st.pool)
         .await
@@ -35,10 +37,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/refresh", post(auth::refresh))
         .route("/v1/auth/logout", post(auth::logout))
         .route("/v1/me", get(auth::me))
-        .route(
-            "/v1/items",
-            get(items::list).post(items::create),
-        )
+        .route("/v1/items", get(items::list).post(items::create))
         .route("/v1/items/search", get(items::search))
         .route(
             "/v1/items/{id}",
@@ -60,10 +59,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::stock::preview_reverse),
         )
         .route("/v1/stock-moves/{id}/reverse", post(crate::stock::reverse))
-        .route(
-            "/v1/cash-entries",
-            get(cash::list).post(cash::create),
-        )
+        .route("/v1/cash-entries", get(cash::list).post(cash::create))
         .route("/v1/cash-entries/{id}", delete(cash::reversal_delete))
         .route("/v1/cash-categories", get(cash::categories))
         .route("/v1/sales", get(sales::list).post(sales::create))

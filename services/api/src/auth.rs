@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{
+    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+};
 use argon2::Argon2;
 use axum::extract::State;
 use axum::Json;
@@ -110,10 +112,17 @@ pub struct SignupReq {
 }
 
 /// POST /v1/auth/signup — public; creates tenant + owner membership.
-pub async fn signup(State(st): State<AppState>, Json(body): Json<SignupReq>) -> ApiResult<Json<Value>> {
+pub async fn signup(
+    State(st): State<AppState>,
+    Json(body): Json<SignupReq>,
+) -> ApiResult<Json<Value>> {
     let email = body.email.trim().to_lowercase();
     if !email.contains('@') || email.len() < 5 {
-        return Err(ApiError::validation_field("Email tidak valid", "email", "harus alamat email"));
+        return Err(ApiError::validation_field(
+            "Email tidak valid",
+            "email",
+            "harus alamat email",
+        ));
     }
     if body.password.len() < 8 {
         return Err(ApiError::validation_field(
@@ -123,7 +132,11 @@ pub async fn signup(State(st): State<AppState>, Json(body): Json<SignupReq>) -> 
         ));
     }
     if body.name.trim().is_empty() {
-        return Err(ApiError::validation_field("Nama wajib diisi", "name", "tidak boleh kosong"));
+        return Err(ApiError::validation_field(
+            "Nama wajib diisi",
+            "name",
+            "tidak boleh kosong",
+        ));
     }
     if body.business_name.trim().is_empty() {
         return Err(ApiError::validation_field(
@@ -238,8 +251,8 @@ async fn login_rows(pool: &PgPool, user_id: Uuid) -> ApiResult<LoginRow> {
             "Akun ini belum terhubung ke toko apa pun".into(),
         ));
     };
-    let role = Role::parse(&role_str)
-        .ok_or_else(|| ApiError::Unauthorized("Peran tidak valid".into()))?;
+    let role =
+        Role::parse(&role_str).ok_or_else(|| ApiError::Unauthorized("Peran tidak valid".into()))?;
 
     set_app_context(&mut tx, Some(tenant_id), Some(user_id)).await?;
     let (tenant_name, outlet): (String, Option<(Uuid, String)>) = sqlx::query_as(
@@ -264,7 +277,10 @@ async fn login_rows(pool: &PgPool, user_id: Uuid) -> ApiResult<LoginRow> {
 }
 
 /// POST /v1/auth/login — public; rate-limited.
-pub async fn login(State(st): State<AppState>, Json(body): Json<LoginReq>) -> ApiResult<Json<Value>> {
+pub async fn login(
+    State(st): State<AppState>,
+    Json(body): Json<LoginReq>,
+) -> ApiResult<Json<Value>> {
     let email = body.email.trim().to_lowercase();
     if !st.login_limiter.allow(&email).await {
         return Err(ApiError::RateLimited);
@@ -290,8 +306,7 @@ pub async fn login(State(st): State<AppState>, Json(body): Json<LoginReq>) -> Ap
     let refresh_token = insert_refresh_token(&mut tx, user_id, login.tenant_id).await?;
     tx.commit().await?;
 
-    let access_token =
-        encode_access(&st.cfg.jwt_secret, user_id, login.tenant_id, login.role)?;
+    let access_token = encode_access(&st.cfg.jwt_secret, user_id, login.tenant_id, login.role)?;
 
     Ok(Json(json!({
         "access_token": access_token,
@@ -336,7 +351,10 @@ async fn lookup_refresh(pool: &PgPool, hash: &str) -> ApiResult<Option<RefreshRo
 }
 
 /// POST /v1/auth/refresh — public; rotates; reuse ⇒ revoke all.
-pub async fn refresh(State(st): State<AppState>, Json(body): Json<RefreshReq>) -> ApiResult<Json<Value>> {
+pub async fn refresh(
+    State(st): State<AppState>,
+    Json(body): Json<RefreshReq>,
+) -> ApiResult<Json<Value>> {
     let hash = hex::encode(Sha256::digest(body.refresh_token.as_bytes()));
     let Some(row) = lookup_refresh(&st.pool, &hash).await? else {
         return Err(ApiError::Unauthorized("Refresh token tidak valid".into()));
@@ -382,8 +400,7 @@ pub async fn refresh(State(st): State<AppState>, Json(body): Json<RefreshReq>) -
 
     tx.commit().await?;
 
-    let access_token =
-        encode_access(&st.cfg.jwt_secret, row.user_id, row.tenant_id, role)?;
+    let access_token = encode_access(&st.cfg.jwt_secret, row.user_id, row.tenant_id, role)?;
 
     Ok(Json(json!({
         "access_token": access_token,
@@ -396,7 +413,10 @@ pub async fn refresh(State(st): State<AppState>, Json(body): Json<RefreshReq>) -
 }
 
 /// POST /v1/auth/logout — public; revokes the presented refresh token.
-pub async fn logout(State(st): State<AppState>, Json(body): Json<RefreshReq>) -> ApiResult<Json<Value>> {
+pub async fn logout(
+    State(st): State<AppState>,
+    Json(body): Json<RefreshReq>,
+) -> ApiResult<Json<Value>> {
     let hash = hex::encode(Sha256::digest(body.refresh_token.as_bytes()));
     if let Some(row) = lookup_refresh(&st.pool, &hash).await? {
         let mut tx = st.pool.begin().await?;
@@ -417,18 +437,17 @@ pub async fn me(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<Json<Valu
     let mut tx = st.pool.begin().await?;
     set_app_context(&mut tx, Some(ctx.tenant_id), Some(ctx.user_id)).await?;
 
-    let user: Option<(Uuid, String, String)> = sqlx::query_as(
-        "select id, name, email::text as email from user_app where id = $1",
-    )
-    .bind(ctx.user_id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let user: Option<(Uuid, String, String)> =
+        sqlx::query_as("select id, name, email::text as email from user_app where id = $1")
+            .bind(ctx.user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     let Some((user_id, user_name, email)) = user else {
         return Err(ApiError::Unauthorized("User tidak ditemukan".into()));
     };
 
     let tenant: Option<(Uuid, String, i64)> = sqlx::query_as(
-        "select id, name, coalesce(tax_rate, 0)::int as tax_rate from tenant where id = $1",
+        "select id, name, coalesce(tax_rate, 0)::bigint as tax_rate from tenant where id = $1",
     )
     .bind(ctx.tenant_id)
     .fetch_optional(&mut *tx)
@@ -437,11 +456,10 @@ pub async fn me(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<Json<Valu
         return Err(ApiError::Unauthorized("Tenant tidak ditemukan".into()));
     };
 
-    let outlets: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "select id, name, timezone from outlet order by created_at, id",
-    )
-    .fetch_all(&mut *tx)
-    .await?;
+    let outlets: Vec<(Uuid, String, String)> =
+        sqlx::query_as("select id, name, timezone from outlet order by created_at, id")
+            .fetch_all(&mut *tx)
+            .await?;
 
     let role_str: Option<String> =
         sqlx::query_scalar("select role from membership where tenant_id = $1 and user_id = $2")

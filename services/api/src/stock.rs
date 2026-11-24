@@ -261,11 +261,7 @@ pub async fn create(
     } else {
         None
     };
-    let recorded_cost = if kind == "in" {
-        unit_cost
-    } else {
-        old_avg
-    };
+    let recorded_cost = if kind == "in" { unit_cost } else { old_avg };
 
     let note = match body.supplier {
         Some(s) if !s.trim().is_empty() => match &body.note {
@@ -305,15 +301,11 @@ pub async fn create(
     Ok(Json(move_row_json(&row, ctx.can_read_cost())?))
 }
 
-async fn check_op_duplicate(
-    tx: &mut PgConnection,
-    op_id: Uuid,
-) -> ApiResult<Option<Value>> {
-    let existing: Option<Value> =
-        sqlx::query_scalar("select result from op_log where op_id = $1")
-            .bind(op_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+async fn check_op_duplicate(tx: &mut PgConnection, op_id: Uuid) -> ApiResult<Option<Value>> {
+    let existing: Option<Value> = sqlx::query_scalar("select result from op_log where op_id = $1")
+        .bind(op_id)
+        .fetch_optional(&mut *tx)
+        .await?;
     Ok(existing.map(|r| json!({ "duplicate": true, "op_id": op_id, "result": r })))
 }
 
@@ -380,7 +372,9 @@ pub async fn list(
 
     let has_more = rows.len() > 100;
     let next_cursor = if has_more {
-        rows.get(99).map(|r| r.try_get::<Uuid, _>("id")).transpose()?
+        rows.get(99)
+            .map(|r| r.try_get::<Uuid, _>("id"))
+            .transpose()?
     } else {
         None
     };
@@ -445,8 +439,7 @@ async fn reversal_plan(tx: &mut PgConnection, orig: &MoveRowFull) -> ApiResult<R
     let cur_avg = item_cost_avg(tx, orig.item_id).await?;
     let cur_qty = total_qty(tx, orig.item_id).await;
     let new_avg = if orig.kind == "in" && orig.qty > Decimal::ZERO {
-        avg_after_removing(cur_qty, cur_avg, orig.qty, orig.unit_cost)
-            .filter(|n| *n != cur_avg)
+        avg_after_removing(cur_qty, cur_avg, orig.qty, orig.unit_cost).filter(|n| *n != cur_avg)
     } else {
         None
     };
