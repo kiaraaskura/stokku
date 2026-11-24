@@ -95,3 +95,46 @@ message: "cannot change name of input parameter \"p_token_hash\"" })
 
 The temporary fixture re-creates `auth_lookup_refresh` with `p_hash` over DB's real
 `p_token_hash`. PRDTASK already said to retire the fixture once 0010 landed. Sent to Backend.
+
+## Run 4 — 2026-11-24, API merged: sections A + B + E green against the real server
+
+Merged to main: DB's `ce51265` (migration runs on an admin connection + `security_invoker`
+report views) and Backend's `cfd8bc5`/`e4f91c2` (the whole API spine). main = `8e3766a`.
+
+Fresh DB `stokku_qa`: `scripts/migrate.sh` applied 1..11 with the documented non-superuser
+`DATABASE_URL` and exited 0 — the F-09 regression is fixed. `make migrate-check` → OK.
+`verify.sh` → exit 0, zero ERROR/FAIL lines.
+
+API run as `stokku` on :8099 (8080 is taken on this machine), against that seeded DB.
+`docs/qa/acceptance-spine.sh` result: **pass=38 fail=0**.
+
+| Acceptance | Expected | Actual |
+|---|---|---|
+| A2 stock in 10 @ 6.000 | stock 10, avg 6.000 | 10 / 6000 |
+| A3 stock in 10 @ 9.000 | stock 20, avg **7.500** | 20 / 7500 |
+| A4 sell 5 @ 12.000 | total 60.000, cost_at_sale 7.500, stock 15 | 60000 / 7500 / 15 |
+| A6 laba rugi | 60.000 / 37.500 / 22.500 / 5.000 / 17.500 | exact, and revenue−hpp−opex = net |
+| A7 drill-downs | sale, line, cash entry | all three 200 and list the right rows |
+| A8 buy 10 @ 6.000 | net unchanged, 25 units | net 17.500, stock 25, avg 6.900 = **172.500** |
+| B9 reverse 10 @ 9.000 | warning first, stock 15, balance == sum of deltas | warning "6900 → 5500", stock 15, ledger true on every row |
+| B10 negative stock | sale succeeds, flagged | stock −15, low_stock true, nothing blocked |
+| B12 void sale | stock restored, cash reversed, marked void | stock back to 20, voided_at set, sale kept |
+| B13 delete with movements | 409, Indonesian | 409 "Item tidak bisa dihapus karena sudah ada pergerakan stok…" |
+
+E21/E22 run by hand against the seeded demo tenant (staff@demo.test):
+`GET /me` capabilities are exactly `["stock.write","sales.write","cash.write"]`;
+`/reports/laba-rugi` **403**, `/reports/laba-rugi/drill` **403**, `POST /items` **403**;
+item rows contain no `cost_avg`; staff stock-in and a staff sale both **200**, recorded with
+`created_by` = the staff user id.
+
+B11 (opname) is Sprint 2 and remains the only B line not implemented.
+
+### F-11 — contract gap: `sale.note` (open, needs PRDTASK)
+`API_CONTRACT.md`'s `POST /sales` body includes `note`, but `sale` has no `note` column in
+DATA_MODEL.md or 0005_sales.sql. Backend correctly does not invent one — the field is accepted
+and silently not stored on the sale (it is stored on the linked cash entry). Either DB adds an
+additive `note text` or the contract drops the field. One-line decision, either way.
+
+### F-12 — T-125 has no dedicated negative-stock field (open, minor)
+`stock < 0` plus `low_stock: true` is the only signal; the frozen item shape has no
+`negative_stock` flag. Matches the contract as written; flagged so nobody thinks it was missed.

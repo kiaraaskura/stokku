@@ -36,7 +36,9 @@ chk_num() { # label expected actual (numeric, tolerate 6000 vs 6000.0)
 
 BODY=""; CODE=""
 call() { # method path [json-body] [token]
-  local m=$1 p=$2 b=${3:-} t=${4:-} args=(-sS -X "$m" -H 'Content-Type: application/json' -w '\n%{http_code}')
+  local m=$1 p=$2 b=${3:-} t=${4:-}
+  local -a args
+  args=(-sS -X "$m" -H 'Content-Type: application/json' -w '\n%{http_code}')
   [ -n "$t" ] && args+=(-H "Authorization: Bearer $t")
   [ -n "$b" ] && args+=(--data "$b")
   local raw; raw=$(curl "${args[@]}" "$BASE$p" 2>&1) || { BODY="$raw"; CODE=000; return; }
@@ -48,7 +50,10 @@ row() { jq -c 'if type=="object" and has("data") then .data else . end' <<<"$1";
 f()   { row "$1" | jq -r "$2 // empty"; }
 
 say "0. health"
-call GET /health
+# /health lives at the server root, not under /v1
+HEALTH_BASE="${BASE%/v1}"
+CODE=$(curl -sS -o /tmp/qa-health.json -w '%{http_code}' "$HEALTH_BASE/health")
+BODY=$(cat /tmp/qa-health.json)
 echo "  GET /health -> $CODE $BODY"
 [ "$CODE" = "200" ] && ok "health 200" || bad "health expected 200 got $CODE"
 
