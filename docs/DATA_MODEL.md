@@ -14,6 +14,11 @@ user_app(id, email citext unique, password_hash, name, created_at)      -- "user
 membership(id, tenant_id, user_id, role check in (owner,staff), unique(tenant_id,user_id))
 device(id, user_id, name, platform, last_seen_at)
 
+-- session rotation (auth): SHA-256 of the opaque token, never the token itself.
+-- Deliberately NOT in change_log / the sync feed.
+refresh_token(id, user_id, tenant_id, token_hash text unique,
+              expires_at, rotated_at, revoked_at, created_at)
+
 category(id, tenant_id, name, sort)
 item(id, tenant_id, sku, name, category_id, base_unit,
      sale_price BIGINT, cost_avg BIGINT, min_stock NUMERIC(14,3),
@@ -30,7 +35,9 @@ stock_level(tenant_id, outlet_id, item_id, qty NUMERIC(14,3), primary key(outlet
 sale(id, tenant_id, outlet_id, number, customer_id, total, discount,
      payment_method check in (cash,transfer,qris,credit), paid bool,
      mode check in (per_item,daily_total) default 'per_item',
-     business_date, voided_at, void_reason, op_id, created_by)
+     business_date, voided_at, void_reason, note, op_id, created_by)
+ -- sale.note: additive column, approved 2026-11-24 — the POST /sales body carries `note`
+ -- and GET /sales returns it. Without the column the list query fails (found in QA).
 sale_line(id, sale_id, item_id, qty, unit_price, discount, cost_at_sale)
 
 payment(id, tenant_id, sale_id, method, provider, amount_gross, mdr_amount,
@@ -79,6 +86,26 @@ create policy tenant_isolation on item
 ```
 
 Connection helper sets `SET LOCAL app.tenant_id = $1` per request transaction. `user_app` and `membership` are set per user, not tenant. Test: a second tenant's token sees zero rows on every table.
+
+### 4.1 Authentication bypass (approved 2026-11-24)
+
+Login and refresh read `user_app` and `refresh_token` **before** a tenant or user is known, so
+under forced RLS those reads return zero rows. Do **not** widen the policies. Instead, three
+`SECURITY DEFINER` functions owned by a dedicated `NO LOGIN` role (not the API's role) carry the
+only permitted bypass:
+
+| Function | Returns |
+|---|---|
+| `auth_find_user(email)` | the matching `user_app` row, or none |
+| `auth_lookup_refresh(token_hash)` | the matching `refresh_token` row, or none |
+| `auth_revoke_tokens(user_id)` | revokes that user's active tokens; returns count |
+
+Requirements: `search_path` pinned to `public, pg_temp`; `EXECUTE` granted to the app role only,
+never `public`; the owner role has no members and is not `SET ROLE`-able. The API calls these,
+then `set_app_context(tenant, user)` for the rest of the request transaction.
+
+Reports views must set `security_invoker = true` (migration 0011) — an admin-owned view otherwise
+runs as its owner and bypasses RLS, leaking every tenant's numbers.
 
 ## 5. Indexes
 
