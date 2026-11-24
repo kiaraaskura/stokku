@@ -45,9 +45,14 @@ file="$BACKUP_DIR/stokku-$stamp.dump"
 dump_url="${BACKUP_DATABASE_URL:-$DATABASE_URL}"
 echo ">> pg_dump (custom format) → $file"
 if ! pg_dump "$dump_url" --format=custom --file="$file"; then
+  rm -f "$file" # drop the partial file from the failed attempt
   echo ">> plain dump failed (likely forced RLS), retrying as superuser"
   super_url=$(sed -E 's#^(postgres(ql)?://)[^@/]*@#\1'"${BACKUP_SUPER_USER:-postgres}"'@#' <<<"$dump_url")
-  pg_dump "$super_url" --format=custom --file="$file"
+  if ! pg_dump "$super_url" --format=custom --file="$file"; then
+    rm -f "$file"
+    echo "!! backup failed (both regular and superuser attempts)" >&2
+    exit 1
+  fi
 fi
 
 # 7-day retention: delete backups older than KEEP_DAYS (prints what it drops).
