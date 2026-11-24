@@ -46,7 +46,8 @@ Every list response: `{ "data": [...], "next_cursor": null }`. Every write respo
 | GET/POST | `/categories` | flat list, `{name, sort}` |
 | POST | `/items/import` | multipart CSV; dry-run returns per-row errors |
 
-Item shape: `{id, sku, name, category_id, base_unit, sale_price, cost_avg, min_stock, active, stock, low_stock, updated_at}`.
+Item shape: `{id, sku, name, category_id, base_unit, sale_price, cost_avg, min_stock, active, stock, low_stock, negative_stock, updated_at}`.
+`low_stock` = `stock <= min_stock`; `negative_stock` = `stock < 0` (additive, approved 2026-11-24 — a data-integrity flag, not a reorder hint).
 `cost_avg` and any margin field are omitted for staff.
 
 ## Stock
@@ -84,7 +85,7 @@ Sale stock moves are created by `/sales`, never by the client directly.
   "op_id": "0193…" }
 ```
 
-Response: sale with `number`, `total`, `lines[]` (each with `cost_at_sale` for owner), `payment`, `created_moves[]`.
+Response: sale with `number`, `total`, `lines[]` (each with `cost_at_sale` for owner), `payment`, `note`, `created_moves[]`.
 Credit sale (`payment_method:"credit"` or `paid:false`) stores a receivable stub and appears in laba rugi as revenue with `unpaid: true`.
 
 ## Cash book

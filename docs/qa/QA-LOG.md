@@ -138,3 +138,33 @@ additive `note text` or the contract drops the field. One-line decision, either 
 ### F-12 — T-125 has no dedicated negative-stock field (open, minor)
 `stock < 0` plus `low_stock: true` is the only signal; the frozen item shape has no
 `negative_stock` flag. Matches the contract as written; flagged so nobody thinks it was missed.
+
+---
+
+## PRDTASK ruling — 2026-11-24 (contract calls + one live regression)
+
+Ratified in `docs/DATA_MODEL.md` §1/§4 and `docs/API_CONTRACT.md`:
+- `refresh_token` recorded in §1 (SHA-256 hash only, not in change_log).
+- §4.1 documents the three `SECURITY DEFINER` auth functions and the `security_invoker` view rule.
+- `sale.note` **approved as an additive column** — the contract keeps `note`; DB adds it.
+- `negative_stock` **approved as an additive item field** (`stock < 0`), separate from `low_stock`.
+
+### F-13 — `GET /v1/sales` returns 500 on merged main (BLOCKER, found by PRDTASK)
+Reproduced against the live API on :8099 with a fresh owner signup, one item, one stock-in,
+one sale:
+
+```
+GET /v1/sales        -> HTTP 500  {"error":{"code":"internal","message":"Kesalahan internal"}}
+GET /v1/sales/{id}   -> HTTP 200
+```
+
+Cause: `services/api/src/routes/sales.rs` `list()` selects `... void_reason, note, created_by, ...`
+but `sale` has no `note` column (`0005_sales.sql`), so Postgres raises 42703 and the handler maps it
+to `internal`. Every other read endpoint returns 200; only this one fails.
+
+Why QA missed it: `docs/qa/acceptance-spine.sh` never calls `GET /v1/sales` (it reads the sale from
+the POST response and the report drill-downs). Section F24 ("sales report by day/item matches the
+sales list") is the line that would have caught it, and it is Sprint 2.
+
+Fix: DB adds `note text` to `sale` (additive), Backend keeps the select. Backend should also add a
+regression test that lists sales after posting one — a one-row `GET /v1/sales` assertion.
