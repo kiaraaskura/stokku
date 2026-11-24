@@ -233,4 +233,32 @@ select substring(u::text,15,1) = '7' and substring(u::text,20,1) in ('8','9','a'
        as uuidv7_ok
 from (select uuidv7() u) s;
 
+\echo '=== auth functions (pre-login reads under forced RLS, migration 0010) ==='
+begin;
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+select (select count(*) from auth_find_user('owner@demo.test')) as owner_found,
+       (select count(*) from auth_find_user('nobody@demo.test')) as unknown_email_rows,
+       (select count(*) from auth_lookup_refresh('bogus-not-a-real-hash')) as bogus_hash_rows,
+       (select left(password_hash, 9) from auth_find_user('owner@demo.test')) as hash_prefix;
+select case
+  when current_setting('is_superuser') = 'on'
+    then 'SKIPPED: running as superuser, which bypasses RLS (run as the app role for this check)'
+  when (select count(*) from user_app) = 0
+       and (select count(*) from refresh_token) = 0
+    then 'OK: plain user_app/refresh_token reads with no app context return 0 rows (policies not widened)'
+  else 'FAIL: functions or policies widened access'
+end as no_widening;
+create temp table auth_cl_before as select count(*) c from change_log;
+insert into refresh_token (id, user_id, tenant_id, token_hash, expires_at) values
+  ('01900000-0000-7000-8000-00DEAD000003', '01900000-0000-7000-8000-000000010001',
+   '01900000-0000-7000-8000-000000000001', 'deadbeef-token-hash', now() + interval '30 days');
+select count(*) as lookup_rows from auth_lookup_refresh('deadbeef-token-hash');
+select auth_revoke_tokens('01900000-0000-7000-8000-000000010001') as revoke_call;
+select revoked_at is not null as revoked from refresh_token where token_hash = 'deadbeef-token-hash';
+select (select count(*) from change_log) - (select c from auth_cl_before) as new_change_log_rows_must_be_0;
+select p.proname, p.prosecdef as security_definer, pg_get_userbyid(p.proowner) as owner,
+       coalesce(array_to_string(p.proacl, ','), 'DEFAULT-PUBLIC') as acl
+from pg_proc p where p.proname in ('auth_find_user','auth_lookup_refresh','auth_revoke_tokens') order by 1;
+rollback;
+
 \echo '=== done ==='
