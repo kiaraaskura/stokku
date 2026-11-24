@@ -92,6 +92,17 @@ SALE=$(f "$BODY" '.id')
 chk "sale posted" "yes" "$([ -n "$SALE" ] && echo yes || echo no)"
 chk_num "sale total" 60000 "$(f "$BODY" '.total')"
 chk_num "sale line cost_at_sale" 7500 "$(row "$BODY" | jq -r '.lines[0].cost_at_sale // empty')"
+# F-13: the list endpoint is a separate query path from POST and from GET /{id}.
+# A missing column here 500s while both of those still return 200, so assert it.
+call GET "/sales" "" "$TOKEN"
+chk "GET /sales -> 200 (list must not 500)" "200" "$CODE"
+LIST_TOTAL=$(row "$BODY" | jq -r '(.data // .)[0].total // empty')
+LIST_ID=$(row "$BODY" | jq -r '(.data // .)[0].id // empty')
+chk_num "GET /sales first row total matches the sale" 60000 "$LIST_TOTAL"
+chk "GET /sales lists the sale just posted" "$SALE" "$LIST_ID"
+call GET "/sales/$SALE" "" "$TOKEN"
+chk "GET /sales/{id} -> 200" "200" "$CODE"
+chk_num "GET /sales/{id} total" 60000 "$(f "$BODY" '.total')"
 call GET "/items/$ITEM" "" "$TOKEN"
 chk_num "stock after sale" 15 "$(f "$BODY" '.stock')"
 
@@ -199,6 +210,37 @@ if [ -n "${STAFF_EMAIL:-}" ] && [ -n "${STAFF_PASSWORD:-}" ]; then
 else
   echo "  SKIP  set STAFF_EMAIL/STAFF_PASSWORD (seed: staff@demo.test) to test the 403s"
 fi
+
+say "16. every contract read endpoint: 200, or 404 if documented unimplemented — never 500"
+# A missing column or a bad select only shows up when the endpoint is actually called,
+# so sweep the read surface instead of trusting the paths the spine happens to use.
+sweep() { # label path
+  call GET "$2" "" "$TOKEN"
+  case "$CODE" in
+    200) ok "$1 -> 200" ;;
+    404) ok "$1 -> 404 (not implemented in this increment)" ;;
+    500) bad "$1 -> 500 $(row "$BODY" | head -c 120)" ;;
+    *)   bad "$1 -> unexpected $CODE $(row "$BODY" | head -c 120)" ;;
+  esac
+}
+sweep "/me"                    "/me"
+sweep "/items"                 "/items"
+sweep "/items/{id}"            "/items/$ITEM"
+sweep "/items/search"          "/items/search?q=Gula"
+sweep "/categories"            "/categories"
+sweep "/stock-moves"           "/stock-moves"
+sweep "/items/{id}/ledger"     "/items/$ITEM/ledger?outlet_id=$OUTLET"
+sweep "/sales"                 "/sales"
+sweep "/sales/{id}"            "/sales/$SALE"
+sweep "/cash-entries"          "/cash-entries"
+sweep "/cash-categories"       "/cash-categories"
+sweep "/reports/laba-rugi"     "/reports/laba-rugi"
+sweep "/reports/laba-rugi/drill" "/reports/laba-rugi/drill?line=revenue"
+# Sprint 2 / not in this increment — 404 expected, 500 still a failure
+sweep "/reports/stock"         "/reports/stock"
+sweep "/reports/sales"         "/reports/sales"
+sweep "/reports/dashboard"     "/reports/dashboard"
+sweep "/outlets/{id}/qris"     "/outlets/$OUTLET/qris"
 
 say "RESULT"
 echo "  pass=$PASS fail=$FAIL"
