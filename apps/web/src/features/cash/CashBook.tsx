@@ -23,7 +23,7 @@ function categoryLabel(category: string, locale: 'id' | 'en'): string {
 }
 
 export function CashBook() {
-  const { repo, refresh, online, apiMode } = useAppState()
+  const { repo, refresh, online, apiMode, dataTick } = useAppState()
   const { api } = useAuth()
   const { t, locale } = useI18n()
   const [month, setMonth] = useState(currentMonth())
@@ -103,7 +103,7 @@ export function CashBook() {
     }
   }
 
-  useEffect(reload, [repo, api, month, online, apiMode])
+  useEffect(reload, [repo, api, month, online, apiMode, dataTick])
 
   const months = recentMonths(12)
 

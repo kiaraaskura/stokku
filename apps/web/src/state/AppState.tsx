@@ -16,6 +16,8 @@ import { flushOutbox } from '../sync/flush'
 interface AppStateValue {
   ready: boolean
   statusLoaded: boolean
+  /** Bumped after a flush applied server rows, so screens re-read the store. */
+  dataTick: number
   repo: Repository | null
   persisted: boolean
   openError: string | null
@@ -48,6 +50,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [statusLoaded, setStatusLoaded] = useState(false)
   const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine))
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [dataTick, setDataTick] = useState(0)
   const toastTimer = useRef<number | null>(null)
   const flushing = useRef(false)
   const [flushTick, setFlushTick] = useState(0)
@@ -140,8 +143,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     if (!repo || flushing.current) return
     flushing.current = true
     try {
-      await flushOutbox(repo, api, online)
+      const result = await flushOutbox(repo, api, online)
       await refresh()
+      if (result.posted > 0) {
+        // queued writes became server rows — screens must re-read the store
+        setDataTick((t) => t + 1)
+      }
     } finally {
       flushing.current = false
     }
@@ -170,6 +177,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     () => ({
       ready: repo !== null || openError !== null,
       statusLoaded,
+      dataTick,
       repo,
       persisted,
       openError,
@@ -184,7 +192,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       toast,
       toastMessage,
     }),
-    [repo, statusLoaded, status, persisted, openError, online, session, flushAgain, refresh, toast, toastMessage],
+    [repo, statusLoaded, status, persisted, openError, online, session, dataTick, flushAgain, refresh, toast, toastMessage],
   )
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>

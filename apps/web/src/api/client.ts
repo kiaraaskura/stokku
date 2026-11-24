@@ -24,6 +24,7 @@ import {
 export const API_BASE_URL: string = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8099'
 
 const REFRESH_KEY = 'stokku.refresh_token'
+const SESSION_KEY = 'stokku.session' // per-tab cache: survives reloads, including offline ones
 
 type FetchLike = typeof fetch
 
@@ -81,6 +82,11 @@ export class ApiClient {
     this.session = session
     this.accessToken = session.access_token
     this.saveRefresh(session.refresh_token)
+    try {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
+    } catch {
+      // storage unavailable — session-only login
+    }
     this.onSessionChange(session)
   }
 
@@ -88,11 +94,33 @@ export class ApiClient {
     this.session = null
     this.accessToken = null
     this.saveRefresh(null)
+    try {
+      sessionStorage.removeItem(SESSION_KEY)
+    } catch {
+      // ignore
+    }
     this.onSessionChange(null)
   }
 
-  /** Restore a session from the persisted refresh token. Returns null when unavailable. */
+  /**
+   * Restore a session: first from the per-tab cache (works while offline, until
+   * the 15-min access token expires), then via the persisted refresh token.
+   */
   async restoreSession(): Promise<Session | null> {
+    try {
+      const raw = sessionStorage.getItem(SESSION_KEY)
+      if (raw) {
+        const session = JSON.parse(raw) as Session
+        this.session = session
+        this.accessToken = session.access_token
+        this.onSessionChange(session)
+        // If the access token has gone stale, the first authed call 401s and
+        // triggers a refresh when the network is back.
+        return session
+      }
+    } catch {
+      // fall through to the refresh path
+    }
     const refresh = this.loadRefresh()
     if (!refresh) return null
     try {
@@ -102,7 +130,10 @@ export class ApiClient {
       })
       this.setSession(session)
       return session
-    } catch {
+    } catch (err) {
+      // A network failure keeps the token for a later retry; only a real
+      // auth rejection (401/reuse) clears the session.
+      if (err instanceof NetworkError) return null
       this.clearSession()
       return null
     }
@@ -281,7 +312,11 @@ export class ApiClient {
         })
         this.setSession(session)
         return session.access_token
-      } catch {
+      } catch (err) {
+        if (err instanceof NetworkError) {
+          // offline: keep everything; a later call retries
+          return null
+        }
         this.clearSession()
         return null
       } finally {

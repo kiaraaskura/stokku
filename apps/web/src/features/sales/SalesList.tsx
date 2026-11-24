@@ -34,7 +34,7 @@ function toRow(s: ApiSale): SaleRow {
 
 /** Sales list: reads GET /sales when online; offline shows the last cached list plus queued local sales. */
 export function SalesList(): React.ReactNode {
-  const { repo, online, apiMode } = useAppState()
+  const { repo, online, apiMode, dataTick } = useAppState()
   const { api } = useAuth()
   const { can } = useCapabilities()
   const { t, locale } = useI18n()
@@ -83,7 +83,7 @@ export function SalesList(): React.ReactNode {
         setSource('local')
       })
     }
-  }, [repo, api, month, online, apiMode])
+  }, [repo, api, month, online, apiMode, dataTick])
 
   const months = recentMonths(12)
 

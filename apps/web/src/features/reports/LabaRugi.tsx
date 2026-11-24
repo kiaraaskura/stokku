@@ -14,7 +14,7 @@ import type { DrillRow, LabaRugi as LabaRugiData } from '../../db/types'
 type DrillKind = 'revenue' | 'hpp' | 'opex' | null
 
 export function LabaRugi() {
-  const { repo, online, apiMode } = useAppState()
+  const { repo, online, apiMode, dataTick } = useAppState()
   const { api } = useAuth()
   const { role } = useCapabilities()
   const { t, locale } = useI18n()
@@ -67,7 +67,7 @@ export function LabaRugi() {
     }
   }
 
-  useEffect(reload, [repo, api, month, online, apiMode])
+  useEffect(reload, [repo, api, month, online, apiMode, dataTick])
 
   const mapDrillRow = (r: ApiDrillRow): DrillRow => {
     const amount = Number(r.amount ?? r.total ?? 0)

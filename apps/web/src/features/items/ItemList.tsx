@@ -10,7 +10,7 @@ import { formatQty, formatIDR } from '../../lib/money'
 import type { Item } from '../../db/types'
 import { StockInSheet } from './StockInSheet'
 export function ItemList() {
-  const { repo, refresh, online, apiMode } = useAppState()
+  const { repo, refresh, online, apiMode, dataTick } = useAppState()
   const { api } = useAuth()
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -47,7 +47,7 @@ export function ItemList() {
     }
   }
 
-  useEffect(reload, [repo, api, debounced, onlyLow, online, apiMode])
+  useEffect(reload, [repo, api, debounced, onlyLow, online, apiMode, dataTick])
   useEffect(() => {
     void refresh()
   }, [refresh])
