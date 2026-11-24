@@ -1,0 +1,10 @@
+# Stokku pnpm workspace. Deployment owns this file.
+# Rust code (services/api) is not a pnpm package; it builds with cargo.
+packages:
+  - apps/*
+  - packages/*
+
+# pnpm >= 10: only these dependencies may run postinstall build scripts.
+# esbuild is needed by vite. Keep this list short and reviewed.
+onlyBuiltDependencies:
+  - esbuild
