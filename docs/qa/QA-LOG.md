@@ -168,3 +168,37 @@ sales list") is the line that would have caught it, and it is Sprint 2.
 
 Fix: DB adds `note text` to `sale` (additive), Backend keeps the select. Backend should also add a
 regression test that lists sales after posting one — a one-row `GET /v1/sales` assertion.
+
+## Run 5 — 2026-11-24, F-13 fix: docs ratified, harness widened, 0012 merged
+
+Merged: `docs-ratify` 190b543 (refresh_token §1, §4.1 auth bypass + security_invoker rule,
+sale.note additive, negative_stock additive, F-13 recorded), then `db` fe2ad4d (0012 sale.note),
+then my two harness commits.
+
+### The harness gap, closed and proved
+`GET /v1/sales` 500'd on main and the harness passed 38/38 because it never called the list —
+it read the sale from the POST response and the report drill-downs. Fixed in two parts:
+
+1. after posting the sale, assert `GET /sales` is 200, that its first row total is 60.000, and
+   that its first row id is the sale just posted; also `GET /sales/{id}` 200 with total 60.000.
+2. a sweep of every read endpoint in API_CONTRACT.md — 200, or 404 when documented
+   unimplemented, and **any 500 fails the run**. Covers /me, /items, /items/{id},
+   /items/search, /categories, /stock-moves, /items/{id}/ledger, /sales, /sales/{id},
+   /cash-entries, /cash-categories, /reports/laba-rugi, its drill, and the four Sprint-2
+   endpoints that must 404 rather than 500.
+
+Proof it bites: run against the unfixed build → **4 failures**, all `GET /sales` 500. That is
+the regression the old 38/38 could not see.
+
+### After 0012 (0012 only; Backend's own fix not merged yet)
+Fresh DB `stokku_0012cap`: migrate applied 1..12, exit 0; `sale.note` is `text`, nullable.
+`GET /sales` → **200** and lists the sale; `GET /sales/{id}` → 200.
+Harness against that build: **pass=60 fail=0**.
+
+### Still open at the end of this run
+- `note` sent on `POST /sales` is **not persisted** by the merged build (list shows `null`):
+  the insert does not name the column yet. Backend's uncommitted fix adds it; not mergeable
+  until committed.
+- `negative_stock` is in the contract but not returned by the merged build yet (same commit).
+- Staff password: the seed's `Demo1234!` works; earlier failed E21 attempts in this run were my
+  wrong password in the call, not an API fault.
