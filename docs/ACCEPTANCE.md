@@ -12,7 +12,7 @@ Seed: `owner@demo.test / Demo1234!`, `staff@demo.test`.
 5. Cash out 5.000 category `listrik` → opex 5.000.
 6. Laba rugi this month: revenue **60.000**, HPP **37.500**, gross **22.500**, opex **5.000**, net **17.500** — to the rupiah.
 7. Tap revenue → the sale is listed. Tap HPP → the sale line is listed. Tap opex → the cash entry is listed.
-8. Buy 10 more @ 6.000 (stock purchase 60.000). Net profit **does not change**; stock value rises to 150.000. This is the "stok bukan beban" rule.
+8. Buy 10 more @ 6.000 (stock purchase 60.000). Net profit **does not change**; stock value rises to **172.500** (25 units, moving average 6.900). This is the "stok bukan beban" rule.
 
 ## B. Ledger integrity
 
