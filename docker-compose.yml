@@ -1,0 +1,80 @@
+# Stokku local stack — owner: Deployment (T-005).
+# One command: `make up` (migrates + seeds on first start, then waits for
+# healthchecks). Data persists in the pgdata volume across `make down`;
+# `docker compose down -v` wipes it.
+name: stokku
+
+services:
+  postgres:
+    image: postgres:16
+    # Bootstrap superuser is "postgres". The app connects as the
+    # non-superuser role "stokku" (created by infra/pg-init.sh) so forced
+    # RLS actually binds the API — a superuser API would see all tenants.
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: stokku
+      STOKKU_DB_PASSWORD: ${STOKKU_DB_PASSWORD:?Set STOKKU_DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/pg-init.sh:/docker-entrypoint-initdb.d/10-stokku-role.sh:ro
+    # 55443 on the host so the shared dev Postgres (55442) is never touched.
+    ports:
+      - "55443:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stokku"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot tool (profile "tools"): runs DB's migrations/seed inside the
+  # compose network, AS THE SUPERUSER (migrations need extensions like
+  # citext/pg_trgm; tables end up owned by postgres, and the stokku role
+  # gets DML rights via default privileges in infra/pg-init.sh).
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/migrate.Dockerfile
+    profiles: ["tools"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/stokku
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    environment:
+      DATABASE_URL: postgres://stokku:${STOKKU_DB_PASSWORD}@postgres:5432/stokku
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/web.Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

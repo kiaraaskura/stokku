@@ -1,0 +1,16 @@
+{
+  "name": "stokku",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stokku monorepo root — see README.md for the command contract (Makefile).",
+  "packageManager": "pnpm@12.23.0",
+  "scripts": {
+    "dev": "make dev",
+    "migrate": "make migrate",
+    "seed": "make seed",
+    "test": "make test",
+    "build": "make build",
+    "up": "make up",
+    "down": "make down"
+  }
+}
