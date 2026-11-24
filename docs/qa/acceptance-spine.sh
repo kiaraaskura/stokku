@@ -2,14 +2,17 @@
 # Captain integration QA — docs/ACCEPTANCE.md section A (accounting spine) and
 # section B (ledger integrity) against a running API, by hand-equivalent HTTP.
 #
-# Usage:  API_BASE=http://127.0.0.1:8080/v1 ./docs/qa/acceptance-spine.sh
+# Usage:  API_BASE=http://127.0.0.1:8099/v1 ./docs/qa/acceptance-spine.sh
 # Needs:  curl, jq. Creates a fresh tenant per run (no data is deleted).
+# Port 8099 by default: 8080 is taken by an unrelated app on this machine, and that
+# app also answers 200 to /health, so a wrong-target run could look green. The
+# identity guard after the health check aborts (exit 90) if the target is not Stokku.
 #
 # Every check prints EXPECTED vs ACTUAL and a PASS/FAIL. Exit code = number of failures.
 # B11 (opname) is not exercised: T-124 is Sprint 2 and absent from the first increment.
 
 set -uo pipefail
-BASE="${API_BASE:-http://127.0.0.1:8080/v1}"
+BASE="${API_BASE:-http://127.0.0.1:8099/v1}"
 TODAY="${BUSINESS_DATE:-$(date +%F)}"
 STAMP="$(date +%s)"
 EMAIL="qa+${STAMP}@demo.test"
@@ -56,6 +59,17 @@ CODE=$(curl -sS -o /tmp/qa-health.json -w '%{http_code}' "$HEALTH_BASE/health")
 BODY=$(cat /tmp/qa-health.json)
 echo "  GET /health -> $CODE $BODY"
 [ "$CODE" = "200" ] && ok "health 200" || bad "health expected 200 got $CODE"
+
+# Identity guard. Port 8080 on a shared machine is often an unrelated service, and
+# some of them answer 200 to /health and even to /reports/stock — a wrong-target run
+# then looks green. Stokku's /health carries a "db.status" key; nothing else here does.
+if row "$BODY" | jq -e 'has("db") and (.db|has("status"))' >/dev/null 2>&1; then
+  ok "target is the Stokku API"
+else
+  bad "target is NOT the Stokku API — got no db.status in /health (is API_BASE pointing at another app?)"
+  echo "  ABORT: refusing to report a result against an unknown service at $HEALTH_BASE" >&2
+  exit 90
+fi
 
 say "1. signup fresh shop (owner)"
 call POST /auth/signup "$(jq -nc --arg e "$EMAIL" '{email:$e,password:("Qa-'"$STAMP"'-pass"),name:"QA Owner",business_name:"QA Warung '"$STAMP"'"}')"
