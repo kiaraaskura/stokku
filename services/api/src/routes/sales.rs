@@ -201,9 +201,9 @@ pub async fn create(
     sqlx::query(
         "insert into sale
            (id, tenant_id, outlet_id, number, customer_id, total, discount, payment_method,
-            paid, mode, business_date, voided_at, void_reason, op_id, created_by)
+            paid, mode, business_date, voided_at, void_reason, op_id, created_by, note)
          values ($1, current_setting('app.tenant_id')::uuid, $2, $3, $4, $5, $6, $7, $8,
-                 'per_item', $9, null, null, $10, $11)",
+                 'per_item', $9, null, null, $10, $11, $12)",
     )
     .bind(sale_id)
     .bind(outlet_id)
@@ -216,6 +216,7 @@ pub async fn create(
     .bind(business_date)
     .bind(body.op_id)
     .bind(ctx.user_id)
+    .bind(body.note.as_deref())
     .execute(&mut *tx)
     .await?;
 
@@ -340,6 +341,7 @@ pub async fn create(
         "paid": paid,
         "mode": "per_item",
         "business_date": business_date,
+        "note": body.note,
         "voided_at": null,
         "lines": plans.iter().map(|p| {
             let mut v = json!({
@@ -450,6 +452,7 @@ pub async fn list(
                 "business_date": r.try_get::<NaiveDate, _>("business_date")?,
                 "voided_at": r.try_get::<Option<DateTime<Utc>>, _>("voided_at")?,
                 "void_reason": r.try_get::<Option<String>, _>("void_reason")?,
+                "note": r.try_get::<Option<String>, _>("note")?,
                 "created_by": r.try_get::<Option<Uuid>, _>("created_by")?,
                 "created_at": r.try_get::<DateTime<Utc>, _>("created_at")?,
             });
@@ -524,6 +527,7 @@ struct SaleRow {
     business_date: NaiveDate,
     voided_at: Option<DateTime<Utc>>,
     void_reason: Option<String>,
+    note: Option<String>,
     created_by: Option<Uuid>,
     created_at: DateTime<Utc>,
 }
@@ -531,7 +535,7 @@ struct SaleRow {
 async fn load_sale(tx: &mut PgConnection, id: Uuid) -> ApiResult<SaleRow> {
     let row = sqlx::query(
         "select id, number, outlet_id, total, discount, payment_method, paid, mode,
-                business_date, voided_at, void_reason, created_by, created_at
+                business_date, voided_at, void_reason, note, created_by, created_at
          from sale where id = $1",
     )
     .bind(id)
@@ -550,6 +554,7 @@ async fn load_sale(tx: &mut PgConnection, id: Uuid) -> ApiResult<SaleRow> {
         business_date: row.try_get("business_date")?,
         voided_at: row.try_get("voided_at")?,
         void_reason: row.try_get("void_reason")?,
+        note: row.try_get("note")?,
         created_by: row.try_get("created_by")?,
         created_at: row.try_get("created_at")?,
     })
@@ -568,6 +573,7 @@ fn sale_json(s: &SaleRow) -> ApiResult<Value> {
         "business_date": s.business_date,
         "voided_at": s.voided_at,
         "void_reason": s.void_reason,
+        "note": s.note,
         "created_by": s.created_by,
         "created_at": s.created_at,
     }))

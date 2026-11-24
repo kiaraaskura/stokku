@@ -35,6 +35,7 @@ fn item_row_json(row: &sqlx::postgres::PgRow, include_cost: bool) -> ApiResult<V
         "active": row.try_get::<bool, _>("active")?,
         "stock": qty_json(&stock),
         "low_stock": stock <= min_stock,
+        "negative_stock": stock < Decimal::ZERO,
         "updated_at": row.try_get::<DateTime<Utc>, _>("updated_at")?,
     });
     if include_cost {
@@ -478,7 +479,8 @@ pub async fn update(
                 "min 0",
             ));
         }
-        push("min_stock", json!(d.to_string()), &mut sets, &mut binds);
+        sets.push(format!("min_stock = ${}::numeric", binds.len() + 1));
+        binds.push(json!(d.to_string()));
     }
     if let Some(v) = obj.get("active") {
         push(
@@ -593,6 +595,9 @@ fn bind_value<'q>(
 ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
     match v {
         Value::Null => query.bind(Option::<String>::None),
+        // min_stock is a decimal serialized as string; all other string
+        // columns are text. Cast at the SQL placeholder instead:
+        // min_stock is the only column bound as "{n}::numeric".
         Value::String(s) => query.bind(s.clone()),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -745,7 +750,7 @@ pub async fn ledger(
     .await?;
 
     let closing: Decimal = sqlx::query_scalar(
-        "select coalesce(qty, 0) from stock_level where item_id = $1 and outlet_id = $2",
+        "select coalesce((select qty from stock_level where item_id = $1 and outlet_id = $2), 0)",
     )
     .bind(id)
     .bind(outlet_id)
@@ -783,6 +788,7 @@ pub async fn ledger(
     Ok(Json(json!({
         "rows": data,
         "closing_qty": qty_json(&closing),
+        "negative_stock": closing < Decimal::ZERO,
     })))
 }
 
