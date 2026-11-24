@@ -1,0 +1,27 @@
+# Fly.io staging app config — Path B in this folder's README.md.
+# Owner: Deployment (T-005). Adjust the app name before `fly deploy`.
+app = "stokku-api-staging"
+primary_region = "sin" # Singapore per DECISIONS.md D8
+
+[build]
+  dockerfile = "infra/api.Dockerfile"
+
+[env]
+  PORT = "8080"
+  RUST_LOG = "info"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend" # stop when idle, keep free usage low
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+[[vm]]
+  size = "shared-cpu-1x" # smallest; fits the Free plan usage
+  memory = "512mb"

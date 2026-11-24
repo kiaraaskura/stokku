@@ -1,0 +1,13 @@
+# Build-context hygiene for all images built from the repo root.
+# Critically: .env (secrets) never enters an image or build context.
+.git
+**/node_modules
+**/dist
+target
+.pnpm-store
+.env
+.env.*
+!.env.example
+backups
+tmp
+*.log

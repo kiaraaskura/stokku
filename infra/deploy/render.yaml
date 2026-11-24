@@ -1,0 +1,37 @@
+# Render blueprint — staging. Owner: Deployment (T-005).
+# Launch with:  render blueprint launch
+# (or recreate the same services by hand — see README.md in this folder.)
+# DATABASE_URL comes from a sync env var or is pasted at launch; never commit it.
+services:
+  - type: web
+    name: stokku-api-staging
+    runtime: docker
+    dockerfilePath: ./infra/api.Dockerfile
+    region: singapore
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false # set at launch / in the dashboard (Neon Singapore URL)
+      - key: JWT_SECRET
+        generateValue: true # long random value, managed by Render
+      - key: APP_BASE_URL
+        value: https://stokku-web-staging.onrender.com
+      - key: RUST_LOG
+        value: info
+
+  - type: web
+    name: stokku-web-staging
+    runtime: static
+    region: singapore
+    buildCommand: corepack enable && pnpm install --no-frozen-lockfile && pnpm --filter ./apps/web run build
+    staticPublishPath: ./apps/web/dist
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://stokku-api-staging.onrender.com/:splat

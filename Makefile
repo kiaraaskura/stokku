@@ -133,8 +133,8 @@ up: ## docker compose: postgres + api + web, migrated + seeded, one command
 	if ! command -v docker >/dev/null 2>&1; then echo '!! docker is not installed on this machine — compose is config-verified only'; exit 1; fi
 	if [[ ! -f .env ]]; then echo '!! copy .env.example to .env and fill it first'; exit 1; fi
 	docker compose up -d --wait postgres
-	docker compose run --rm migrate
-	docker compose run --rm --entrypoint bash migrate scripts/seed.sh
+	docker compose --profile tools run --rm migrate
+	docker compose --profile tools run --rm --entrypoint bash migrate scripts/seed.sh
 	docker compose up -d --wait
 	echo '>> up: web http://localhost:5173 · api http://localhost:8080/health'
 
