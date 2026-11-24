@@ -125,6 +125,10 @@ create trigger change_log after insert or update on receivable
 create function audit_master_data() returns trigger
 language plpgsql as $$
 begin
+  -- a no-op UPDATE is not an edit
+  if tg_op = 'UPDATE' and new is not distinct from old then
+    return new;
+  end if;
   insert into audit_log (tenant_id, actor_id, action, entity, entity_id, before, after, device)
   values (
     coalesce((to_jsonb(new)->>'tenant_id')::uuid, (to_jsonb(old)->>'tenant_id')::uuid),

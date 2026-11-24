@@ -56,6 +56,10 @@ create table item_unit (
 create function touch_updated_at() returns trigger
 language plpgsql as $$
 begin
+  -- a no-op UPDATE does not count as a write: do not touch updated_at
+  if new is not distinct from old then
+    return new;
+  end if;
   new.updated_at := clock_timestamp();
   return new;
 end;
