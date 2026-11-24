@@ -5,11 +5,23 @@ Run everything from an empty database with one command:
 
 ```sh
 scripts/migrate.sh        # wraps: (cd services/api && sqlx migrate run)
+scripts/seed.sh           # idempotent demo seed (run twice to prove it)
+scripts/verify.sh         # all proof queries: ledger, change log, RLS, laba rugi
 ```
 
-`DATABASE_URL` comes from the environment or `.env` at the repo root.
-The dev Postgres is the shared instance on `127.0.0.1:55442`, database
-`stokku`, role `stokku` (trust auth on localhost).
+`DATABASE_URL` stays the **app-role** connection (non-superuser `stokku`) at
+all times. Migrations that need elevated rights (0010: only a superuser can
+grant BYPASSRLS to the definer role) run on a **separate admin connection**:
+
+- `MIGRATION_DATABASE_URL` — explicit admin URL, used only for migrations.
+- If unset, `migrate.sh` falls back to `DATABASE_URL`; when that is not a
+  superuser it tries the `postgres` admin account on the same server
+  (passwordless on trust-auth dev installs, or with `POSTGRES_PASSWORD`).
+- When the migrations ran as someone other than the app role, the app role
+  is granted table/sequence/function rights afterwards — the same model as
+  `infra/pg-init.sh` in compose.
+- If no admin connection is reachable, the run proceeds as-is and 0010
+  fails loudly (never silently degrades: auth must not quietly break).
 
 ## Notes for Backend
 
@@ -57,7 +69,10 @@ The dev Postgres is the shared instance on `127.0.0.1:55442`, database
 - `uuidv7()` is available as a default on every PK; `qris_crc16(text)`
   computes CRC-16/CCITT-FALSE for QRIS payload validation.
 - Report views: `v_revenue`, `v_hpp`, `v_opex` (one row per category,
-  `opex` column = period total), `v_laba_rugi`. Voided sales contribute 0;
+  `opex` column = period total), `v_laba_rugi`. All four are
+  `security_invoker` (0011), so they read *through* the caller's RLS
+  policies — they never bypass tenant isolation even where the views are
+  owned by the superuser (compose/CI). Voided sales contribute 0;
   daily_total sales contribute revenue with hpp 0; stock purchases are
   never opex (category `pembelian_stok` / `modal`, or `ref_type` in
   `purchase` / `stock_move`).
@@ -90,7 +105,7 @@ context and use normal queries.
 - They are deliberately out of `change_log` (SELECTs fire no triggers and
   `refresh_token` has none), like `refresh_token` itself.
 - Migration 0010 must run as a **superuser** (only a superuser can grant
-  BYPASSRLS). Compose and CI already run migrations as the superuser; for a
-  local database use the superuser once, e.g.
-  `DATABASE_URL=postgres://postgres@127.0.0.1:55442/<db> ./scripts/migrate.sh`.
-  It fails with a clear error if run by a role that cannot set this up.
+  BYPASSRLS). `scripts/migrate.sh` handles this: it prefers
+  `MIGRATION_DATABASE_URL`, else auto-uses the local `postgres` admin
+  account, and grants the app role its rights afterwards. Without any admin
+  access it fails loudly with instructions.
