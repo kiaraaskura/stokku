@@ -1,0 +1,117 @@
+# Stokku CI — owner: Deployment (T-002).
+# Red CI must block merge: enable branch protection on main requiring
+# these checks (see infra/deploy/README.md "Branch protection").
+# Jobs skip themselves while their target is still a placeholder, so PRs
+# that only touch docs/config stay green; once real code lands, a failure
+# is a failure.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web (typecheck · lint · tests · build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ hashFiles('apps/web/package.json') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # TODO(Deployment): switch to --frozen-lockfile once the root lockfile
+      # covers the fully merged workspace (it must be regenerated after the
+      # first frontend merge).
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm --filter ./apps/web run typecheck
+      - name: lint (only when a lint script exists)
+        run: |
+          if grep -q '"lint"' apps/web/package.json; then
+            pnpm --filter ./apps/web run lint
+          else
+            echo "apps/web has no lint script yet — typecheck is the lint gate for now"
+          fi
+      - run: pnpm --filter ./apps/web run test
+      - run: pnpm --filter ./apps/web run build
+
+  api:
+    name: API (fmt · clippy -D warnings · tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ hashFiles('services/api/Cargo.toml') != '' }}
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/api
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  migrations:
+    name: Migrations (from zero · seed idempotent · DB verify)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: stokku
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: stokku
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U stokku -d stokku"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://stokku:SI_SECRET_DBPASSWORD_QH2HET5P@localhost:5432/stokku
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install postgres client + sqlx-cli
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          cargo install sqlx-cli --version 0.9.1 --no-default-features --features postgres
+      - run: ./scripts/migrate.sh
+      - run: ./scripts/seed.sh
+      - name: seed again (must insert 0 rows)
+        run: ./scripts/seed.sh
+      - run: ./scripts/verify.sh
+
+  compose:
+    name: Compose + Dockerfiles (config check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      POSTGRES_PASSWORD: ci
+      JWT_SECRET: ci-not-a-real-secret
+      APP_BASE_URL: http://localhost:5173
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: docker compose config -q
+      - name: build API image (only once services/api is real)
+        if: ${{ hashFiles('services/api/Cargo.toml') != '' }}
+        run: docker build -f infra/api.Dockerfile .
+      - name: build web image (only once apps/web is real)
+        if: ${{ hashFiles('apps/web/package.json') != '' }}
+        run: docker build -f infra/web.Dockerfile .
