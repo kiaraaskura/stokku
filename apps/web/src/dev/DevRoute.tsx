@@ -139,7 +139,7 @@ export function DevRoute() {
       <section className="stack">
         <h2 style={{ margin: 0, fontSize: 'var(--text-lg)' }}>{t('dev.storage')}</h2>
         <p className="muted" style={{ margin: 0 }}>
-          {persisted ? t('dev.storageOk') : t('dev.storageFallback')} · {t('sync.pending')}: {pendingOps}
+          {persisted ? t('dev.storageOk') : t('dev.storageFallback')} · {repo?.mode ?? ''} · {t('sync.pending')}: {pendingOps}
         </p>
         <div className="row">
           <Button

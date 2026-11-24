@@ -27,16 +27,16 @@ export function App(): React.ReactNode {
       <AppStateProvider>
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={<RootRedirect />} />
             <Route path="/onboarding" element={<OnboardingRoute />} />
-            <Route element={<AppShell />}>
-              <Route path="/barang" element={<ItemList />} />
-              <Route path="/barang/baru" element={<ItemForm />} />
-              <Route path="/barang/:id" element={<ItemForm />} />
-              <Route path="/jual" element={<Cart />} />
-              <Route path="/kas" element={<CashBook />} />
-              <Route path="/laporan" element={<LabaRugi />} />
-              <Route path="/dev" element={<DevRoute />} />
+            <Route path="/" element={<AppShell />}>
+              <Route index element={<RootRedirect />} />
+              <Route path="barang" element={<ItemList />} />
+              <Route path="barang/baru" element={<ItemForm />} />
+              <Route path="barang/:id" element={<ItemForm />} />
+              <Route path="jual" element={<Cart />} />
+              <Route path="kas" element={<CashBook />} />
+              <Route path="laporan" element={<LabaRugi />} />
+              <Route path="dev" element={<DevRoute />} />
               <Route path="*" element={<Navigate to="/barang" replace />} />
             </Route>
           </Routes>

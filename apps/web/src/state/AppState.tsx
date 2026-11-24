@@ -13,6 +13,7 @@ import type { Outlet, Tenant } from '../db/types'
 
 interface AppStateValue {
   ready: boolean
+  statusLoaded: boolean
   repo: Repository | null
   persisted: boolean
   openError: string | null
@@ -38,6 +39,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     outlet: Outlet | null
     pendingOps: number
   }>({ onboarded: false, tenant: null, outlet: null, pendingOps: 0 })
+  const [statusLoaded, setStatusLoaded] = useState(false)
   const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine))
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
@@ -69,6 +71,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         repo.call('pendingOutboxCount'),
       ])
       setStatus({ onboarded, tenant, outlet, pendingOps })
+      setStatusLoaded(true)
     } catch {
       // keep the last good status; screens surface their own errors
     }
@@ -98,6 +101,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AppStateValue>(
     () => ({
       ready: repo !== null || openError !== null,
+      statusLoaded,
       repo,
       persisted,
       openError,
@@ -110,7 +114,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       toast,
       toastMessage,
     }),
-    [repo, persisted, openError, status, online, refresh, toast, toastMessage],
+    [repo, statusLoaded, status, persisted, openError, online, refresh, toast, toastMessage],
   )
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>

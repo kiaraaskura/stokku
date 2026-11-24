@@ -4,11 +4,11 @@ React 19 + Vite + TypeScript front end for Stokku. Bahasa Indonesia default, Eng
 
 ## Storage choice (T-201/T-202)
 
-**sql.js (SQLite compiled to WASM) running in a dedicated Web Worker, persisted to OPFS** (Origin Private File System) via a sync access handle on `stokku.db`.
+**sql.js (SQLite compiled to WASM) running in a dedicated Web Worker, persisted to OPFS** (Origin Private File System) on `stokku.db`.
 
 - The worker owns the only database handle. The main thread talks to it through an async RPC (`src/db/store.ts`).
-- Every mutating repository call is wrapped in a SQLite `SAVEPOINT` transaction that writes the business row **and its outbox op (UUIDv7 `op_id`)** atomically, then flushes the database file to OPFS — so a kill at any moment leaves a consistent, committed state.
-- Fallback: when OPFS is unavailable the database lives in memory for the session only (flagged in the UI via `persisted: false`).
+- Every mutating repository call is wrapped in a SQLite `SAVEPOINT` transaction that writes the business row **and its outbox op (UUIDv7 `op_id`)** atomically, then flushes the database file to OPFS before replying — so a kill at any moment leaves a consistent, committed state.
+- Flush path: OPFS sync access handle when the browser supports it, otherwise the standard `FileSystemWritableFileStream` (async, serialized), otherwise memory-only for the session (flagged in the UI via `persisted: false`).
 - Sync is not implemented yet (next increment): ops accumulate in the `outbox` table and the sync dot shows the pending count.
 
 The UI never calls the network or SQL directly — only the `Repository` interface (`src/db/store.ts`) backed by `repoMethods` (`src/db/repo.ts`), so a server-backed adapter can slot in later.

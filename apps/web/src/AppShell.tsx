@@ -17,10 +17,10 @@ const NAV_ITEMS: {
 ]
 
 export function AppShell(): ReactNode {
-  const { tenant, pendingOps, online, ready, openError, onboarded } = useAppState()
+  const { tenant, pendingOps, online, ready, openError, onboarded, statusLoaded } = useAppState()
   const { t } = useI18n()
 
-  if (!ready) {
+  if (!ready || !statusLoaded) {
     return (
       <div className="app" style={{ alignItems: 'center', justifyContent: 'center' }}>
         <Loading />

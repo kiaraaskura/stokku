@@ -11,6 +11,8 @@ import { migrate } from './schema'
 
 export interface Repository {
   readonly persisted: boolean
+  /** Storage backend actually in use: 'opfs-sync' | 'opfs-writable' | 'memory'. */
+  readonly mode?: string
   call<M extends RepoMethodName>(method: M, ...args: RepoMethodArgs<M>): Promise<RepoMethodResult<M>>
 }
 
@@ -18,13 +20,15 @@ type Reply = { kind: 'reply'; id: number; ok: true; result: unknown } | { kind: 
 
 class WorkerRepository implements Repository {
   readonly persisted: boolean
+  readonly mode: string
   private nextId = 1
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
   private worker: Worker
 
-  constructor(worker: Worker, persisted: boolean) {
+  constructor(worker: Worker, persisted: boolean, mode: string) {
     this.worker = worker
     this.persisted = persisted
+    this.mode = mode
     worker.onmessage = (ev: MessageEvent<Reply>) => {
       const msg = ev.data
       if (msg?.kind !== 'reply') return
@@ -61,14 +65,28 @@ class MemoryRepository implements Repository {
 
 /** Open the best available local repository. Resolves within `timeoutMs` or falls back. */
 export async function openRepository(timeoutMs = 8000): Promise<Repository> {
+  if (!repositoryPromise) {
+    repositoryPromise = createRepository(timeoutMs).catch((err: unknown) => {
+      // allow a later retry after a hard failure
+      repositoryPromise = null
+      throw err
+    })
+  }
+  return repositoryPromise
+}
+
+/** Module-level singleton: StrictMode double-mounts must not orphan workers. */
+let repositoryPromise: Promise<Repository> | null = null
+
+async function createRepository(timeoutMs: number): Promise<Repository> {
   try {
     const worker = new Worker(new URL('./sqlite.worker.ts', import.meta.url), { type: 'module' })
-    const ready = await new Promise<{ persisted: boolean } | null>((resolve) => {
+    const ready = await new Promise<{ persisted: boolean; mode: string } | null>((resolve) => {
       const timer = setTimeout(() => resolve(null), timeoutMs)
       worker.onmessage = (ev: MessageEvent) => {
         if (ev.data?.kind === 'ready') {
           clearTimeout(timer)
-          resolve({ persisted: Boolean(ev.data.persisted) })
+          resolve({ persisted: Boolean(ev.data.persisted), mode: String(ev.data.mode ?? 'unknown') })
         }
       }
       worker.onerror = () => {
@@ -77,7 +95,7 @@ export async function openRepository(timeoutMs = 8000): Promise<Repository> {
       }
     })
     if (ready) {
-      return new WorkerRepository(worker, ready.persisted)
+      return new WorkerRepository(worker, ready.persisted, ready.mode)
     }
     worker.terminate()
   } catch {
