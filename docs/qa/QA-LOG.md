@@ -202,3 +202,45 @@ Harness against that build: **pass=60 fail=0**.
 - `negative_stock` is in the contract but not returned by the merged build yet (same commit).
 - Staff password: the seed's `Demo1234!` works; earlier failed E21 attempts in this run were my
   wrong password in the call, not an API fault.
+
+## Run 6 — 2026-11-24, F-13 closed on main: harness 63/63
+
+Merged: `backend` 27abf92 (persist `sale.note`, `negative_stock`, PATCH items numeric cast,
+ledger coalesce, regression test). main = `846e4c2`. Merge gate honoured: DB's 0012 was in main
+(`aa38f74`) before Backend's fix went in, and 0012 is in Backend's history too.
+
+### My verification of merged main (not the report)
+
+| Check | Result |
+|---|---|
+| `cargo fmt --check` | OK |
+| `cargo clippy --all-targets -- -D warnings` | clean |
+| `cargo test` with `STOKKU_TEST_ADMIN_URL` | **4/4** — auth flow, moving-average math, 2500-op property test, sales-list regression |
+| fresh DB `stokku_mainqa`, migrate with non-superuser `DATABASE_URL` | applied 1..12, exit 0 |
+| seed | ok |
+
+### Harness on merged main — fresh DB, API as `stokku` on :8099
+
+**pass=63 fail=0**, including section E (`staff@demo.test` / the seeded password).
+
+- Section 16 sweep: all 13 implemented read endpoints **200**; `/reports/stock`,
+  `/reports/sales`, `/reports/dashboard`, `/outlets/{id}/qris` **404** as documented; no 500.
+- `GET /sales` now 200 with the posted row, total 60.000, id match (the F-13 check).
+- E21: staff `403` on laba rugi and item-create, no `cost_avg` in staff item rows.
+
+### The three bugs F-13's audit exposed, verified by hand on main
+
+1. `sale.note` round-trips: POST returns it and `GET /sales` row carries it ("pelanggan langganan").
+2. Item with **no** `stock_level` row: `GET /items/{id}/ledger` = **200** with rows (was 404).
+3. `PATCH /items/{id}` with `min_stock` = **200** (was 500, text/numeric bind).
+
+Plus `negative_stock` present and correct: an item sold to `stock -1` returns
+`{"stock":-1,"low_stock":true,"negative_stock":true,"min_stock":3}` — `negative_stock` is
+`stock < 0` and `low_stock` stays `stock <= min_stock`, as ratified.
+
+### Honest notes
+- Harness `STAFF_PASSWORD` must be the real seed password (`Demo1234!`); two intermediate runs
+  showed a false `staff login 401` because of my own wrong value, not an API fault.
+- The debug binary had to be rebuilt before the run; a stale `target/debug` binary makes any
+  harness result meaningless.
+- Still out of scope: sections C (sync), D (QRIS), B11 (opname) and the web app's API wiring.
