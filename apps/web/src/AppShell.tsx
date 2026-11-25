@@ -7,7 +7,7 @@ import { Button } from './components/primitives'
 import type { ReactNode } from 'react'
 
 export function AppShell(): ReactNode {
-  const { tenant, pendingOps, online, ready, openError, onboarded, statusLoaded, apiMode } = useAppState()
+  const { tenant, pendingOps, inboxTotal, online, ready, openError, onboarded, statusLoaded, syncStatus, syncError } = useAppState()
   const { session, logout } = useAuth()
   const { role } = useCapabilities()
   const { t } = useI18n()
@@ -82,7 +82,7 @@ export function AppShell(): ReactNode {
           {tenant?.name}
           {role === 'staff' ? ' · ' + t('auth.roleStaff') : ''}
           <br />
-          <SyncDot pending={pendingOps > 0} offline={!online} synced={apiMode && pendingOps === 0} />
+          <SyncDot pending={pendingOps > 0} offline={!online} synced={syncStatus === 'synced'} error={syncStatus === 'error'} count={pendingOps + inboxTotal} />
           {session ? (
             <div style={{ marginTop: 'var(--space-2)' }}>
               <Button variant="secondary" size="sm" onClick={() => void logout().then(() => location.assign('/login'))}>
@@ -110,7 +110,12 @@ export function AppShell(): ReactNode {
           </div>
           <div className="app-header__spacer" />
           <LanguageSwitch />
-          <SyncDot pending={pendingOps > 0} offline={!online} synced={apiMode && pendingOps === 0} />
+          {inboxTotal > 0 && (
+            <NavLink to="/perlu-dicek" className="nav-pill" style={{ textDecoration: 'none' }} aria-label={t('inbox.title')}>
+              ⚠️ {t('inbox.title')} ({inboxTotal})
+            </NavLink>
+          )}
+          <SyncDot pending={pendingOps > 0} offline={!online} synced={syncStatus === 'synced'} error={syncStatus === 'error'} count={pendingOps + inboxTotal} />
           {session ? (
             <Button
               variant="secondary"
@@ -126,6 +131,19 @@ export function AppShell(): ReactNode {
             </NavLink>
           )}
         </header>
+        {syncStatus === 'error' && (
+          <div
+            role="status"
+            style={{
+              background: 'var(--color-warning-soft)',
+              color: 'var(--color-warning)',
+              fontSize: 'var(--text-sm)',
+              padding: 'var(--space-1) var(--space-4)',
+            }}
+          >
+            {t('sync.errorBanner')} {syncError ?? ''}
+          </div>
+        )}
         <main className="app-content">
           <Outlet />
         </main>

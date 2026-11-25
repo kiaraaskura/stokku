@@ -11,7 +11,16 @@ import { Cart } from './features/sales/Cart'
 import { SalesList } from './features/sales/SalesList'
 import { CashBook } from './features/cash/CashBook'
 import { LabaRugi } from './features/reports/LabaRugi'
+import { ReportsHub } from './features/reports/ReportsHub'
+import { StockReport } from './features/reports/StockReport'
+import { SalesReport } from './features/reports/SalesReport'
+import { Dashboard } from './features/reports/Dashboard'
+import { OpnameScreen } from './features/opname/OpnameScreen'
+import { QrScreen } from './features/qris/QrScreen'
+import { QrisSettings } from './features/qris/QrisSettings'
+import { InboxScreen } from './features/inbox/InboxScreen'
 import { DevRoute } from './dev/DevRoute'
+import { CrashBoundary } from './components/CrashBoundary'
 
 const LANG_KEY = 'stokku.lang'
 const savedLang = typeof localStorage !== 'undefined' ? localStorage.getItem(LANG_KEY) : null
@@ -32,6 +41,7 @@ export function App(): React.ReactNode {
       <AuthProvider>
         <AppStateProvider>
           <BrowserRouter>
+            <CrashBoundary>
             <Routes>
               <Route path="/login" element={<LoginScreen />} />
               <Route path="/onboarding" element={<OnboardingRoute />} />
@@ -43,11 +53,20 @@ export function App(): React.ReactNode {
                 <Route path="jual" element={<Cart />} />
                 <Route path="penjualan" element={<SalesList />} />
                 <Route path="kas" element={<CashBook />} />
-                <Route path="laporan" element={<LabaRugi />} />
+                <Route path="laporan" element={<ReportsHub />} />
+                <Route path="laporan/laba-rugi" element={<LabaRugi />} />
+                <Route path="laporan/stok" element={<StockReport />} />
+                <Route path="laporan/penjualan" element={<SalesReport />} />
+                <Route path="laporan/ringkasan" element={<Dashboard />} />
+                <Route path="opname" element={<OpnameScreen />} />
+                <Route path="qris-settings" element={<QrisSettings />} />
+                <Route path="perlu-dicek" element={<InboxScreen />} />
                 <Route path="dev" element={<DevRoute />} />
                 <Route path="*" element={<Navigate to="/barang" replace />} />
               </Route>
+              <Route path="/qris/:saleId" element={<QrScreen />} />
             </Routes>
+            </CrashBoundary>
           </BrowserRouter>
         </AppStateProvider>
       </AuthProvider>

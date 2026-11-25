@@ -20,7 +20,7 @@ interface UnitDraft {
 export function ItemForm() {
   const { id } = useParams()
   const isEdit = id !== undefined
-  const { repo, toast, refresh, online, apiMode, flushAgain } = useAppState()
+  const { repo, toast, refresh, online, apiMode, syncAgain } = useAppState()
   const { api } = useAuth()
   const { can } = useCapabilities()
   const showCost = can('cost.read')
@@ -123,11 +123,11 @@ export function ItemForm() {
 
     setSaving(true)
     try {
-      const wire = {
+      // The API rejects an empty-string category_id; omit it when unset.
+      const wire: Record<string, unknown> = {
         name,
         sku: sku.trim() === '' ? null : sku.trim(),
         barcodes,
-        category_id: categoryId === '' ? null : categoryId,
         base_unit: baseUnit.trim(),
         units: unitDrafts.map((u) => ({ name: u.name, factor: u.factorM! / 1000 })),
         sale_price: salePrice,
@@ -135,6 +135,7 @@ export function ItemForm() {
         min_stock: minStockM / 1000,
         active,
       }
+      if (categoryId !== '') wire['category_id'] = categoryId
       const localInput = {
         name,
         sku: sku.trim() === '' ? null : sku.trim(),
@@ -156,7 +157,7 @@ export function ItemForm() {
         },
         local: () => (isEdit && id ? repo.call('updateItem', id, localInput) : repo.call('createItem', localInput)),
       })
-      if (source === 'local') flushAgain()
+      if (source === 'local') syncAgain()
       toast(t('form.itemSaved'))
       void refresh()
       navigate('/barang')

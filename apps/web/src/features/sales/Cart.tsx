@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router'
 import { useEffect, useMemo, useState } from 'react'
 import { useAppState } from '../../state/AppState'
 import { useAuth } from '../../state/AuthState'
@@ -9,7 +10,7 @@ import { formatIDR, formatQty, qtyTimesUnitCost } from '../../lib/money'
 import { todayISO } from '../../lib/date'
 import { uuidv7 } from '../../lib/uuid'
 import { remoteOrLocal, wireItemToLocal } from '../../api/gateway'
-import { NetworkError } from '../../api/types'
+import { NetworkError, type ApiQrisSettings } from '../../api/types'
 import type { Item, PaymentMethod } from '../../db/types'
 
 interface CartLine {
@@ -27,9 +28,10 @@ const PAYMENT_METHODS: { id: PaymentMethod; key: 'sell.payment.cash' | 'sell.pay
 ]
 
 export function Cart() {
-  const { repo, toast, refresh, online, apiMode, outlet, flushAgain } = useAppState()
+  const { repo, toast, refresh, online, apiMode, outlet, syncAgain } = useAppState()
   const { api } = useAuth()
   const { t } = useI18n()
+  const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Item[]>([])
   const [lines, setLines] = useState<CartLine[]>([])
@@ -49,20 +51,20 @@ export function Cart() {
     }
     let cancelled = false
     const timer = setTimeout(() => {
-      const local = () => repo.call('searchItems', q)
-      const finish = (wire: Item[] | { id: string; sku: string | null; name: string; base_unit: string; sale_price: number; cost_avg?: number; min_stock: number; stock: number; active: boolean; updated_at?: string }[]) => {
-        if (!cancelled) setResults(apiMode ? wire.map((r) => wireItemToLocal(r as never)) : (wire as Item[]))
+      // Local rows are already the UI shape; API rows map through wireItemToLocal.
+      const showItems = (items: Item[]) => {
+        if (!cancelled) setResults(items)
       }
       if (online && apiMode) {
         api
           .searchItems(q)
           .then(async (rows) => {
             await repo.call('applyServerItems', rows)
-            finish(rows as never)
+            showItems(rows.map(wireItemToLocal))
           })
-          .catch(() => void local().then(finish))
+          .catch(() => void repo.call('searchItems', q).then(showItems))
       } else {
-        void local().then(finish)
+        void repo.call('searchItems', q).then(showItems)
       }
     }, 100)
     return () => {
@@ -76,6 +78,17 @@ export function Cart() {
     [lines],
   )
   const total = Math.max(0, subtotal - discount)
+
+  // Pre-cache the outlet QR while the shopper picks QRIS, so the QR screen
+  // opens instantly (and offline) after the sale posts.
+  useEffect(() => {
+    if (paymentMethod !== 'qris' || !repo || !outlet || !online || !apiMode) return
+    void api
+      .getQrisSettings(outlet.id)
+      .then((fresh: ApiQrisSettings) => repo.call('setServerCache', `qris:${outlet.id}`, fresh))
+      .catch(() => undefined)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paymentMethod, outlet?.id])
 
   const addItem = (item: Item) => {
     setQuery('')
@@ -101,7 +114,8 @@ export function Cart() {
     const negative = lines.filter((l) => l.qtyM > l.item.stockM)
     try {
       const t0 = performance.now()
-      const { source } = await remoteOrLocal({
+      const salePaid = paymentMethod === 'credit' ? false : paid
+      const { source, value } = await remoteOrLocal({
         online,
         session: apiMode,
         remote: () =>
@@ -111,7 +125,8 @@ export function Cart() {
             customer_id: null,
             discount,
             payment_method: paymentMethod,
-            paid: paymentMethod === 'credit' ? false : paid,
+            // QRIS money arrives via the confirm call; unpaid here on purpose.
+            paid: paymentMethod === 'qris' ? false : salePaid,
             note: null,
             lines: lines.map((l) => ({
               item_id: l.item.id,
@@ -123,13 +138,12 @@ export function Cart() {
           }),
         onRemoteSuccess: async (sale) => {
           await repo.call('applyServerSale', sale)
+          // Item stock/cost refresh runs in the background so checkout does not wait on it.
           for (const l of lines) {
-            try {
-              const fresh = await api.getItem(l.item.id)
-              await repo.call('applyServerItems', [fresh])
-            } catch {
-              // read path refreshes on next screen load
-            }
+            void api
+              .getItem(l.item.id)
+              .then((fresh) => repo.call('applyServerItems', [fresh]))
+              .catch(() => undefined)
           }
         },
         local: () =>
@@ -137,7 +151,7 @@ export function Cart() {
             businessDate: todayISO(),
             discount,
             paymentMethod,
-            paid: paymentMethod === 'credit' ? false : paid,
+            paid: paymentMethod === 'qris' ? false : salePaid,
             note: null,
             lines: lines.map((l) => ({
               itemId: l.item.id,
@@ -156,7 +170,7 @@ export function Cart() {
       if (source === 'server') {
         toast(`${t('sell.saved', { total: formatIDR(total) })} · ${t('common.serverData')} · ${(elapsed / 1000).toFixed(2)}s`)
       } else {
-        flushAgain()
+        syncAgain()
         toast(`${t('sell.saved', { total: formatIDR(total) })} · ${t('sync.queued')}`)
       }
       setLines([])
@@ -164,6 +178,12 @@ export function Cart() {
       setPaymentMethod('cash')
       setPaid(true)
       void refresh()
+      if (paymentMethod === 'qris') {
+        // QR screen: amount in hand so it renders instantly.
+        navigate('/qris/' + String((value as { id?: string })?.id ?? ''), {
+          state: { total, offlineSale: source === 'local' },
+        })
+      }
     } catch (err) {
       if (err instanceof NetworkError) setError(t('auth.networkError'))
       else setError(err instanceof Error ? err.message : String(err))
@@ -280,7 +300,13 @@ export function Cart() {
             </div>
           </fieldset>
 
-          {paymentMethod !== 'credit' && (
+          {paymentMethod === 'qris' && (
+            <p className="muted" style={{ margin: 0, fontSize: 'var(--text-sm)' }}>
+              {t('qris.payAfterScan')}
+            </p>
+          )}
+
+          {paymentMethod !== 'credit' && paymentMethod !== 'qris' && (
             <label className="row" style={{ minHeight: 'var(--tap-target)', cursor: 'pointer' }}>
               <input type="checkbox" checked={paid} onChange={(e) => setPaid(e.target.checked)} style={{ width: 20, height: 20 }} />
               {paid ? t('sell.paid') : t('sell.unpaid')}

@@ -15,8 +15,14 @@ import {
   type ApiLabaRugi,
   type ApiLedger,
   type ApiList,
+  type ApiOpnameSession,
+  type ApiQrisConfirm,
+  type ApiQrisSettings,
   type ApiSale,
+  type ApiSalesReportRow,
   type ApiStockMove,
+  type ApiStockReport,
+  type ApiDashboard,
   type Me,
   type Session,
 } from './types'
@@ -215,6 +221,10 @@ export class ApiClient {
     return this.request<ApiSale>('/sales', { method: 'POST', body: JSON.stringify(input), auth: true })
   }
 
+  async getSale(id: string): Promise<ApiSale> {
+    return this.request<ApiSale>(`/sales/${encodeURIComponent(id)}`, { auth: true })
+  }
+
   async listSales(from: string, to: string): Promise<ApiSale[]> {
     const res = await this.request<ApiList<ApiSale>>(`/sales?from=${from}&to=${to}`, { auth: true })
     return res.data
@@ -244,6 +254,83 @@ export class ApiClient {
   async drill(line: string): Promise<ApiDrillRow[]> {
     const res = await this.request<ApiList<ApiDrillRow>>(`/reports/laba-rugi/drill?line=${encodeURIComponent(line)}`, { auth: true })
     return res.data
+  }
+
+  async stockReport(outletId: string): Promise<ApiStockReport> {
+    return this.request<ApiStockReport>(`/reports/stock?outlet_id=${encodeURIComponent(outletId)}`, { auth: true })
+  }
+
+  async salesReport(from: string, to: string, groupBy: 'day' | 'item' | 'category'): Promise<ApiSalesReportRow[]> {
+    const res = await this.request<ApiList<ApiSalesReportRow>>(
+      `/reports/sales?from=${from}&to=${to}&group_by=${groupBy}`,
+      { auth: true },
+    )
+    return res.data
+  }
+
+  async dashboard(outletId: string): Promise<ApiDashboard> {
+    return this.request<ApiDashboard>(`/reports/dashboard?outlet_id=${encodeURIComponent(outletId)}`, { auth: true })
+  }
+
+  // ---- QRIS (Tier 0) ----
+
+  async getQrisSettings(outletId: string): Promise<ApiQrisSettings> {
+    return this.request<ApiQrisSettings>(`/outlets/${encodeURIComponent(outletId)}/qris`, { auth: true })
+  }
+
+  async putQrisSettings(outletId: string, input: Record<string, unknown>): Promise<ApiQrisSettings> {
+    return this.request<ApiQrisSettings>(`/outlets/${encodeURIComponent(outletId)}/qris`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+      auth: true,
+    })
+  }
+
+  async qrisConfirm(saleId: string, input: { amount_gross: number; mdr_pct?: number; paid_at?: string }): Promise<ApiQrisConfirm> {
+    return this.request<ApiQrisConfirm>(`/sales/${encodeURIComponent(saleId)}/qris/confirm`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+      auth: true,
+    })
+  }
+
+  // ---- opname ----
+
+  async createOpname(input: { outlet_id: string; category_id?: string | null; item_ids?: string[] }): Promise<ApiOpnameSession> {
+    return this.request<ApiOpnameSession>('/opname', { method: 'POST', body: JSON.stringify(input), auth: true })
+  }
+
+  // ---- sync (T-302/T-303 wire contract, docs/SYNC_INCREMENT.md) ----
+
+  async syncPush(input: {
+    device_id: string
+    ops: { op_id: string; type: string; payload: Record<string, unknown>; client_ts: string }[]
+  }): Promise<{ results: { op_id: string; status: 'applied' | 'duplicate' | 'rejected'; reason: string | null }[]; cursor: number }> {
+    return this.request('/sync/push', { method: 'POST', body: JSON.stringify(input), auth: true })
+  }
+
+  async syncPull(cursor: number, limit = 500): Promise<{
+    changes: { table: string; row: Record<string, unknown>; server_seq: number; deleted: boolean }[]
+    cursor: number
+    has_more: boolean
+  }> {
+    return this.request(`/sync/pull?cursor=${cursor}&limit=${limit}`, { auth: true })
+  }
+
+  async getOpname(id: string): Promise<ApiOpnameSession> {
+    return this.request<ApiOpnameSession>(`/opname/${encodeURIComponent(id)}`, { auth: true })
+  }
+
+  async patchOpnameLines(id: string, lines: { item_id: string; counted_qty: number }[]): Promise<ApiOpnameSession> {
+    return this.request<ApiOpnameSession>(`/opname/${encodeURIComponent(id)}/lines`, {
+      method: 'PATCH',
+      body: JSON.stringify({ lines }),
+      auth: true,
+    })
+  }
+
+  async postOpname(id: string): Promise<{ posted: boolean; adjustments: unknown[] }> {
+    return this.request(`/opname/${encodeURIComponent(id)}/post`, { method: 'POST', body: '{}', auth: true })
   }
 
   // ---- core ----

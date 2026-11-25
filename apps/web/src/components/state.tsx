@@ -94,11 +94,22 @@ export function ErrorView({ message, onRetry }: { message?: string; onRetry?: ()
   )
 }
 
-export function SyncDot({ pending, offline, synced }: { pending: boolean; offline: boolean; synced?: boolean }) {
+export function SyncDot({ pending, offline, synced, error, count }: { pending: boolean; offline: boolean; synced?: boolean; error?: boolean; count?: number }) {
   const { t } = useI18n()
-  // The dot must never look synced when a write is unconfirmed: offline > pending > synced.
-  const cls = offline ? 'sync-dot--offline' : pending ? 'sync-dot--pending' : synced ? 'sync-dot--synced' : ''
-  const label = offline ? t('sync.offline') : pending ? t('sync.pending') : synced ? t('sync.synced') : t('sync.local')
+  // Priority: offline > queued/error > synced. Never "synced" with unconfirmed writes.
+  const cls = offline
+    ? 'sync-dot--offline'
+    : pending
+      ? 'sync-dot--pending'
+      : error
+        ? 'sync-dot--offline'
+        : synced
+          ? 'sync-dot--synced'
+          : ''
+  let label = offline ? t('sync.offline') : pending ? t('sync.pending') : error ? t('sync.error') : synced ? t('sync.synced') : t('sync.local')
+  if (count !== undefined && count > 0 && (pending || error)) {
+    label = `${label} (${count})`
+  }
   return (
     <span className={`sync-dot ${cls}`} title={label} role="status">
       <span className="sync-dot__dot" aria-hidden="true" />

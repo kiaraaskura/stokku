@@ -11,12 +11,14 @@ import {
 import { openRepository, type Repository } from '../db/store'
 import type { Outlet, Tenant } from '../db/types'
 import { useAuth } from './AuthState'
-import { flushOutbox } from '../sync/flush'
+import { runSync, type SyncRunResult } from '../sync/engine'
+
+export type SyncStatus = 'synced' | 'pending' | 'error'
 
 interface AppStateValue {
   ready: boolean
   statusLoaded: boolean
-  /** Bumped after a flush applied server rows, so screens re-read the store. */
+  /** Bumped after a sync applied server rows, so screens re-read the store. */
   dataTick: number
   repo: Repository | null
   persisted: boolean
@@ -25,10 +27,14 @@ interface AppStateValue {
   tenant: Tenant | null
   outlet: Outlet | null
   pendingOps: number
+  inboxTotal: number
   online: boolean
   /** True when operating against the API with a confirmed session. */
   apiMode: boolean
-  flushAgain: () => void
+  /** The real sync state, straight off the last run + queue. */
+  syncStatus: SyncStatus
+  syncError: string | null
+  syncAgain: () => void
   refresh: () => Promise<void>
   toast: (message: string) => void
   toastMessage: string | null
@@ -46,14 +52,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     tenant: Tenant | null
     outlet: Outlet | null
     pendingOps: number
-  }>({ onboarded: false, tenant: null, outlet: null, pendingOps: 0 })
+    inbox: number
+  }>({ onboarded: false, tenant: null, outlet: null, pendingOps: 0, inbox: 0 })
   const [statusLoaded, setStatusLoaded] = useState(false)
   const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine))
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [dataTick, setDataTick] = useState(0)
+  const [lastSyncResult, setLastSyncResult] = useState<SyncRunResult | null>(null)
   const toastTimer = useRef<number | null>(null)
-  const flushing = useRef(false)
-  const [flushTick, setFlushTick] = useState(0)
+  const syncing = useRef(false)
+  const [syncTick, setSyncTick] = useState(0)
+  const debounceTimer = useRef<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -75,13 +84,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     if (!repo) return
     try {
-      const [onboarded, tenant, outlet, pendingOps] = await Promise.all([
+      const [onboarded, tenant, outlet, pendingOps, inbox] = await Promise.all([
         repo.call('isOnboarded'),
         repo.call('getTenant'),
         repo.call('getOutlet'),
         repo.call('pendingOutboxCount'),
+        repo.call('inboxCount'),
       ])
-      setStatus({ onboarded, tenant, outlet, pendingOps })
+      setStatus({ onboarded, tenant, outlet, pendingOps, inbox })
       setStatusLoaded(true)
     } catch {
       // keep the last good status; screens surface their own errors
@@ -132,39 +142,57 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     const goOffline = () => setOnline(false)
     window.addEventListener('online', goOnline)
     window.addEventListener('offline', goOffline)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') setSyncTick((t) => t + 1)
+    }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       window.removeEventListener('online', goOnline)
       window.removeEventListener('offline', goOffline)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [])
 
-  // Flush the outbox: on demand, when the session appears, when back online, every 20 s.
-  const runFlush = useCallback(async () => {
-    if (!repo || flushing.current) return
-    flushing.current = true
+  // One sync run: push batches then pull pages.
+  const doSync = useCallback(async () => {
+    if (!repo || syncing.current) return
+    syncing.current = true
     try {
-      const result = await flushOutbox(repo, api, online)
+      const result = await runSync(repo, api, online)
+      setLastSyncResult(result)
       await refresh()
-      if (result.posted > 0) {
-        // queued writes became server rows — screens must re-read the store
+      if (result.pulled > 0 || result.pushed > 0) {
+        // server rows changed or were confirmed — screens re-read the store
         setDataTick((t) => t + 1)
       }
     } finally {
-      flushing.current = false
+      syncing.current = false
     }
   }, [repo, api, online, refresh])
 
+  // Triggers (docs/SYNC_INCREMENT.md): foreground/visibility, network regained,
+  // session change, tick (mutation debounce + 15-min background), and at boot.
   useEffect(() => {
-    void runFlush()
-  }, [runFlush, session?.tenant.id, online, flushTick])
+    void doSync()
+  }, [doSync, session?.tenant.id, online, syncTick])
 
+  // 15-minute background heartbeat.
   useEffect(() => {
-    const timer = window.setInterval(() => setFlushTick((t) => t + 1), 20000)
+    const timer = window.setInterval(() => setSyncTick((t) => t + 1), 15 * 60 * 1000)
     return () => window.clearInterval(timer)
   }, [])
 
-  const flushAgain = useCallback(() => {
-    setFlushTick((t) => t + 1)
+  /**
+   * Ask for a sync soon: 1 s debounce after a mutation (the queue may still be
+   * filling), immediate for an explicit user request.
+   */
+  const syncAgain = useCallback((immediate = false) => {
+    if (debounceTimer.current) window.clearTimeout(debounceTimer.current)
+    if (immediate) {
+      setSyncTick((t) => t + 1)
+      return
+    }
+    debounceTimer.current = window.setTimeout(() => setSyncTick((t) => t + 1), 1000)
   }, [])
 
   const toast = useCallback((message: string) => {
@@ -172,6 +200,18 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     if (toastTimer.current) window.clearTimeout(toastTimer.current)
     toastTimer.current = window.setTimeout(() => setToastMessage(null), 2600)
   }, [])
+
+  // The dot only says synced when the queue is empty, we are in API mode,
+  // the last run ended without an error, and the inbox is empty of rejects.
+  const syncStatus: SyncStatus = useMemo(() => {
+    if (!online) return 'pending'
+    if (status.pendingOps > 0) return 'pending'
+    if (!session) return 'pending' // local mode: nothing has been confirmed
+    if (lastSyncResult && !lastSyncResult.ok) return 'error'
+    if (status.inbox > 0) return 'error'
+    return 'synced'
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [online, status.pendingOps, status.inbox, session, lastSyncResult])
 
   const value = useMemo<AppStateValue>(
     () => ({
@@ -185,14 +225,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       tenant: status.tenant,
       outlet: status.outlet,
       pendingOps: status.pendingOps,
+      inboxTotal: status.inbox,
       online,
       apiMode: session !== null,
-      flushAgain,
+      syncStatus,
+      syncError: lastSyncResult?.error ?? null,
+      syncAgain,
       refresh,
       toast,
       toastMessage,
     }),
-    [repo, statusLoaded, status, persisted, openError, online, session, dataTick, flushAgain, refresh, toast, toastMessage],
+    [repo, statusLoaded, status, dataTick, persisted, openError, online, session, syncStatus, lastSyncResult, syncAgain, refresh, toast, toastMessage],
   )
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>

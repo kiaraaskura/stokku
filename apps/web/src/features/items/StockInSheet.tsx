@@ -25,7 +25,7 @@ export function StockInSheet({
   onClose: () => void
   onSaved: () => void
 }) {
-  const { repo, toast, online, apiMode, outlet, flushAgain } = useAppState()
+  const { repo, toast, online, apiMode, outlet, syncAgain } = useAppState()
   const { api } = useAuth()
   const { t } = useI18n()
   const [qtyM, setQtyM] = useState(1000)
@@ -92,7 +92,7 @@ export function StockInSheet({
         toast(t('stockin.saved'))
       } else {
         // queued optimistically; the flusher posts it when the network returns
-        flushAgain()
+        syncAgain()
         toast(t('sync.queued'))
       }
       onSaved()
