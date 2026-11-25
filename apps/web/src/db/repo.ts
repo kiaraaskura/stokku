@@ -1143,6 +1143,35 @@ function applyOneChange(
           ],
         )
       }
+      // The server embeds a sale's lines in the sale row (sale_line is not a pulled
+      // table). Without this, a second device shows revenue with an empty HPP
+      // breakdown — the section C case the two-device gate exists to catch.
+      // Lines never change after posting, so replace-then-insert is safe.
+      const lines = row['lines']
+      if (Array.isArray(lines)) {
+        db.run('DELETE FROM sale_line WHERE sale_id = ?', [id])
+        for (const raw of lines) {
+          const l = raw as Record<string, unknown>
+          const lineId = (l['id'] as string) ?? `${id}-${String(l['item_id'] ?? '')}`
+          // qty arrives in base units as a JSON number (e.g. 5); local stores milli-units.
+          const qtyM = Math.round(Number(l['qty'] ?? 0) * 1000)
+          // Staff pulls omit cost_at_sale; store 0 rather than throwing.
+          const costAtSale = Number(l['cost_at_sale'] ?? 0) || 0
+          db.run(
+            `INSERT INTO sale_line (id, sale_id, item_id, qty_m, unit_price, discount, cost_at_sale)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              lineId,
+              id,
+              (l['item_id'] as string) ?? '',
+              qtyM,
+              Number(l['unit_price'] ?? 0),
+              Number(l['discount'] ?? 0),
+              costAtSale,
+            ],
+          )
+        }
+      }
       return
     }
     case 'cash_entry': {
