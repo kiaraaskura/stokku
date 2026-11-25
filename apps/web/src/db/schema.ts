@@ -12,7 +12,7 @@ import { uuidv7 } from '../lib/uuid'
  * - Every mutation writes an outbox row with a UUIDv7 op_id in the same transaction.
  */
 
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
 -- v3: items that were changed by another device (LWW notice)
 CREATE TABLE IF NOT EXISTS changed_elsewhere (
   item_id TEXT PRIMARY KEY,
+  item_name TEXT NOT NULL DEFAULT '',
   noticed_at TEXT NOT NULL
 );
 
@@ -215,6 +216,14 @@ export function migrate(db: Db): void {
     // v3: seed the sync device id once.
     if (current < 3) {
       db.run('INSERT OR IGNORE INTO sync_state (singleton, device_id, cursor) VALUES (1, ?, 0)', [uuidv7()])
+    }
+    // v3 -> v4: changed_elsewhere gains the item name for display.
+    if (current === 3) {
+      try {
+        db.exec('ALTER TABLE changed_elsewhere ADD COLUMN item_name TEXT NOT NULL DEFAULT \'\'')
+      } catch {
+        // column already present
+      }
     }
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`)
   })

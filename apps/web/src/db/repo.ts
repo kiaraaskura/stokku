@@ -963,17 +963,31 @@ export function getSyncState(db: Db): SyncState {
  * Apply one pull page and advance the cursor ONLY inside the same local
  * transaction (T-304) — if the commit fails, the cursor stays where it was
  * and the page re-pulls next time.
+ *
+ * `ownEchoes` carries field signatures of items this device just pushed in
+ * the same sync run, so our own edits coming back do not raise the
+ * "diubah di perangkat lain" notice.
  */
+export function itemSignature(row: Record<string, unknown>): string {
+  return [
+    typeof row['name'] === 'string' ? row['name'] : '',
+    Number(row['sale_price'] ?? 0),
+    Math.round(Number(row['min_stock'] ?? 0) * 1000),
+    row['active'] === false ? 0 : 1,
+  ].join('|')
+}
+
 export function applyPullPage(
   db: Db,
   changes: { table: string; row: Record<string, unknown>; server_seq: number; deleted: boolean }[],
   newCursor: number,
   hasMore: boolean,
-  ownDeviceId: string,
+  ownEchoSignatures: string[] = [],
 ): void {
+  const echoes = new Set(ownEchoSignatures)
   db.transaction(() => {
     for (const change of changes) {
-      applyOneChange(db, change, ownDeviceId)
+      applyOneChange(db, change, echoes)
     }
     // Cursor advances only now — after every row of the page is committed.
     db.run('UPDATE sync_state SET cursor = ?, last_synced_at = ? WHERE singleton = 1', [
@@ -987,7 +1001,7 @@ export function applyPullPage(
 function applyOneChange(
   db: Db,
   change: { table: string; row: Record<string, unknown>; server_seq: number; deleted: boolean },
-  _ownDeviceId: string,
+  ownEchoes: Set<string>,
 ): void {
   const row = change.row ?? {}
   const id = String(row['id'] ?? '')
@@ -1019,7 +1033,10 @@ function applyOneChange(
             id,
           ],
         )
-        markChangedElsewhere(db, id)
+        // LWW notice — but not for our own edit echoing back in this run.
+        if (!ownEchoes.has(itemSignature(row))) {
+          markChangedElsewhere(db, id, name)
+        }
       } else {
         db.run(
           `INSERT INTO item (id, sku, name, category_id, base_unit, sale_price, cost_avg, min_stock_m, active, updated_at)
@@ -1150,6 +1167,36 @@ function applyOneChange(
       )
       return
     }
+    case 'stock_level': {
+      const outletId = (row['outlet_id'] as string) ?? getMeta(db, 'outlet_id')
+      if (!outletId) return
+      db.run(
+        `INSERT INTO stock_level (outlet_id, item_id, qty_m) VALUES (?, ?, ?)
+         ON CONFLICT(outlet_id, item_id) DO UPDATE SET qty_m = excluded.qty_m`,
+        [outletId, String(row['item_id'] ?? ''), Math.round(Number(row['qty'] ?? 0) * 1000)],
+      )
+      return
+    }
+    case 'sale_line': {
+      const existing = db.get<{ id: string }>('SELECT id FROM sale_line WHERE id = ?', [id])
+      if (existing) return
+      const saleId = String(row['sale_id'] ?? '')
+      if (!db.get<{ id: string }>('SELECT id FROM sale WHERE id = ?', [saleId])) return
+      db.run(
+        `INSERT INTO sale_line (id, sale_id, item_id, qty_m, unit_price, discount, cost_at_sale)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          saleId,
+          String(row['item_id'] ?? ''),
+          Math.round(Number(row['qty'] ?? 0) * 1000),
+          Number(row['unit_price'] ?? 0),
+          Number(row['discount'] ?? 0),
+          Number(row['cost_at_sale'] ?? 0),
+        ],
+      )
+      return
+    }
     case 'outlet': {
       // QRIS settings arrive here: cache them for offline QR.
       const outletId = getMeta(db, 'outlet_id')
@@ -1178,17 +1225,17 @@ function applyOneChange(
 }
 
  /** Detect another device's edit (LWW notice, T-305). */
-function markChangedElsewhere(db: Db, itemId: string): void {
+function markChangedElsewhere(db: Db, itemId: string, itemName: string): void {
   db.run(
-    'INSERT INTO changed_elsewhere (item_id, noticed_at) VALUES (?, ?) ON CONFLICT(item_id) DO UPDATE SET noticed_at = excluded.noticed_at',
-    [itemId, new Date().toISOString()],
+    'INSERT INTO changed_elsewhere (item_id, item_name, noticed_at) VALUES (?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET noticed_at = excluded.noticed_at, item_name = excluded.item_name',
+    [itemId, itemName, new Date().toISOString()],
   )
 }
 
-export function listChangedElsewhere(db: Db): { itemId: string; noticedAt: string }[] {
+export function listChangedElsewhere(db: Db): { itemId: string; itemName: string; noticedAt: string }[] {
   return db
-    .all<{ item_id: string; noticed_at: string }>('SELECT item_id, noticed_at FROM changed_elsewhere')
-    .map((r) => ({ itemId: r.item_id, noticedAt: r.noticed_at }))
+    .all<{ item_id: string; item_name: string; noticed_at: string }>('SELECT item_id, item_name, noticed_at FROM changed_elsewhere')
+    .map((r) => ({ itemId: r.item_id, itemName: r.item_name, noticedAt: r.noticed_at }))
 }
 
 export function clearChangedElsewhere(db: Db, itemId: string): void {

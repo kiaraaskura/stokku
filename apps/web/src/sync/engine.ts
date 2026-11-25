@@ -72,6 +72,7 @@ export async function runSync(repo: Repository, api: ApiClient, online: boolean)
   const { deviceId } = await repo.call('getSyncState')
 
   // ---- push: batches of 50, in client order ----
+  const ownEchoSignatures: string[] = []
   for (;;) {
     const ops = await repo.call('pendingOutboxList', 50)
     if (ops.length === 0) break
@@ -86,8 +87,8 @@ export async function runSync(repo: Repository, api: ApiClient, online: boolean)
         })),
       })
       for (const r of res.results ?? []) {
+        const op = ops.find((o) => o.opId === r.op_id)
         if (r.status === 'rejected') {
-          const op = ops.find((o) => o.opId === r.op_id)
           await repo.call('addInboxRow', {
             id: r.op_id,
             kind: 'rejected',
@@ -100,6 +101,17 @@ export async function runSync(repo: Repository, api: ApiClient, online: boolean)
           result.rejected += 1
         } else {
           // applied or duplicate: either way the op is settled server-side
+          if (op?.type === 'item.update' && op?.payload) {
+            const p = op.payload
+            ownEchoSignatures.push(
+              [
+                typeof p['name'] === 'string' ? p['name'] : '',
+                Number(p['sale_price'] ?? 0),
+                Math.round(Number(p['min_stock'] ?? 0) * 1000),
+                p['active'] === false ? 0 : 1,
+              ].join('|'),
+            )
+          }
           await repo.call('clearOutboxOp', r.op_id)
           if (r.status === 'duplicate') result.duplicates += 1
           else result.pushed += 1
@@ -133,7 +145,7 @@ export async function runSync(repo: Repository, api: ApiClient, online: boolean)
       result.error = err instanceof Error ? err.message : String(err)
       break
     }
-    await repo.call('applyPullPage', page.changes ?? [], page.cursor, page.has_more ?? false, deviceId)
+    await repo.call('applyPullPage', page.changes ?? [], page.cursor, page.has_more ?? false, ownEchoSignatures)
     result.pulled += (page.changes ?? []).length
     if (!page.has_more) break
   }

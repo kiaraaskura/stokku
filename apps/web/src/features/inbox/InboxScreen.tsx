@@ -30,7 +30,7 @@ export function InboxScreen(): React.ReactNode {
       ])
       setRows(inbox)
       const nameById = new Map(items.map((i) => [i.id, i.name]))
-      setNotices(changed.map((c) => ({ itemId: c.itemId, noticedAt: c.noticedAt, name: nameById.get(c.itemId) ?? c.itemId.slice(0, 8) })))
+      setNotices(changed.map((c) => ({ itemId: c.itemId, noticedAt: c.noticedAt, name: c.itemName || nameById.get(c.itemId) || c.itemId.slice(0, 8) })))
     })()
   }
 

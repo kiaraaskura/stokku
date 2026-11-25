@@ -176,7 +176,7 @@ describe('pull: cursor advances ONLY after the apply commits', () => {
       { table: 'item', row: { id: 'srv-item-1', name: 'Teh Tarik', base_unit: 'pcs', sale_price: 5000, min_stock: 0, active: true, stock: 3 }, server_seq: 101, deleted: false },
       { table: 'cash_entry', row: { id: 'srv-cash-1', direction: 'out', amount: 2000, category: 'listrik', method: 'cash', business_date: todayISO() }, server_seq: 102, deleted: false },
     ]
-    applyPullPage(db, changes, 102, false, 'device-1')
+    applyPullPage(db, changes, 102, false)
     const after = getSyncState(db)
     expect(after.cursor).toBe(102)
     // the rows applied
@@ -195,7 +195,7 @@ describe('pull: cursor advances ONLY after the apply commits', () => {
       // invalid row: sale with a bad payment_method violates the CHECK constraint -> throws mid-transaction
       { table: 'sale', row: { id: 'srv-sale-bad', number: 'S000099', payment_method: 'bitcoin', paid: true, business_date: todayISO() }, server_seq: 202, deleted: false },
     ]
-    expect(() => applyPullPage(db, changes, 202, false, 'device-1')).toThrow()
+    expect(() => applyPullPage(db, changes, 202, false)).toThrow()
     // rollback: no partial row, cursor unchanged
     expect(getItem(db, 'srv-item-2')).toBeNull()
     expect(getSyncState(db).cursor).toBe(before)
@@ -227,7 +227,6 @@ describe('pull: paid flag and conflict notice', () => {
       ],
       300,
       false,
-      'device-1',
     )
     const { getSale } = await import('../db/repo')
     expect(getSale(db, sale.id)!.paid).toBe(true)
@@ -240,11 +239,34 @@ describe('pull: paid flag and conflict notice', () => {
       [{ table: 'item', row: { id: item.id, name: item.name, base_unit: 'pcs', sale_price: 999, min_stock: 0, active: true }, server_seq: 400, deleted: false }],
       400,
       false,
-      'device-2',
     )
     const { listChangedElsewhere, getItem } = await import('../db/repo')
     expect(listChangedElsewhere(db).some((n) => n.itemId === item.id)).toBe(true)
     expect(getItem(db, item.id)!.salePrice).toBe(999) // server write won
+  })
+
+  it('does NOT raise the notice when our own pushed edit echoes back', async () => {
+    const item = await setupShop()
+    const { listChangedElsewhere } = await import('../db/repo')
+    // our own item.update signature
+    const sig = [item.name, 888, 0, 1].join('|')
+    applyPullPage(
+      db,
+      [{ table: 'item', row: { id: item.id, name: item.name, base_unit: 'pcs', sale_price: 888, min_stock: 0, active: true }, server_seq: 500, deleted: false }],
+      500,
+      false,
+      [sig],
+    )
+    expect(listChangedElsewhere(db).some((n) => n.itemId === item.id)).toBe(false)
+    // a foreign edit with a different signature still raises it
+    applyPullPage(
+      db,
+      [{ table: 'item', row: { id: item.id, name: item.name, base_unit: 'pcs', sale_price: 777, min_stock: 0, active: true }, server_seq: 501, deleted: false }],
+      501,
+      false,
+      [sig],
+    )
+    expect(listChangedElsewhere(db).some((n) => n.itemId === item.id)).toBe(true)
   })
 })
 
