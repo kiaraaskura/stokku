@@ -2,16 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAppState } from '../../state/AppState'
+import { useAuth } from '../../state/AuthState'
 import { useI18n } from '../../i18n/I18nProvider'
 import { Badge, Button } from '../../components/primitives'
 import { Empty, ErrorView, Loading } from '../../components/state'
-import { formatQty } from '../../lib/money'
-import { formatIDR } from '../../lib/money'
+import { formatQty, formatIDR } from '../../lib/money'
 import type { Item } from '../../db/types'
 import { StockInSheet } from './StockInSheet'
-
 export function ItemList() {
-  const { repo, refresh } = useAppState()
+  const { repo, refresh, online, apiMode, dataTick } = useAppState()
+  const { api } = useAuth()
   const { t } = useI18n()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
@@ -30,13 +30,27 @@ export function ItemList() {
   const reload = () => {
     if (!repo) return
     setError(null)
-    repo
-      .call('listItems', debounced, onlyLow)
-      .then((rows) => setItems(rows))
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+    const localRead = (): Promise<Item[]> => repo.call('listItems', debounced, onlyLow)
+    if (online && apiMode) {
+      api
+        .listItems(debounced)
+        .then(async (rows) => {
+          // Server rows write through to the local cache; rendering always reads the store.
+          await repo.call('applyServerItems', rows)
+          setItems(await localRead())
+        })
+        .catch(() => {
+          void localRead().then(setItems).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+        })
+    } else {
+      void localRead().then(setItems).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+    }
   }
 
-  useEffect(reload, [repo, debounced, onlyLow])
+  useEffect(reload, [repo, api, debounced, onlyLow, online, apiMode, dataTick])
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
 
   const virtualizer = useVirtualizer({
     count: items?.length ?? 0,

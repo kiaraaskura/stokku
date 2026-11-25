@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAppState } from '../../state/AppState'
+import { useAuth } from '../../state/AuthState'
 import { useI18n } from '../../i18n/I18nProvider'
 import { Button, Badge } from '../../components/primitives'
 import { CurrencyInput, Input } from '../../components/inputs'
 import { Empty, ErrorView } from '../../components/state'
 import { formatIDR, formatQty, qtyTimesUnitCost } from '../../lib/money'
 import { todayISO } from '../../lib/date'
+import { uuidv7 } from '../../lib/uuid'
+import { remoteOrLocal, wireItemToLocal } from '../../api/gateway'
+import { NetworkError } from '../../api/types'
 import type { Item, PaymentMethod } from '../../db/types'
 
 interface CartLine {
@@ -23,7 +27,8 @@ const PAYMENT_METHODS: { id: PaymentMethod; key: 'sell.payment.cash' | 'sell.pay
 ]
 
 export function Cart() {
-  const { repo, toast, refresh } = useAppState()
+  const { repo, toast, refresh, online, apiMode, outlet, flushAgain } = useAppState()
+  const { api } = useAuth()
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Item[]>([])
@@ -34,7 +39,6 @@ export function Cart() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [negWarning, setNegWarning] = useState<string | null>(null)
-  const timingRef = useRef<number>(0)
 
   useEffect(() => {
     if (!repo) return
@@ -45,20 +49,27 @@ export function Cart() {
     }
     let cancelled = false
     const timer = setTimeout(() => {
-      repo
-        .call('searchItems', q)
-        .then((items) => {
-          if (!cancelled) setResults(items)
-        })
-        .catch(() => {
-          if (!cancelled) setResults([])
-        })
+      const local = () => repo.call('searchItems', q)
+      const finish = (wire: Item[] | { id: string; sku: string | null; name: string; base_unit: string; sale_price: number; cost_avg?: number; min_stock: number; stock: number; active: boolean; updated_at?: string }[]) => {
+        if (!cancelled) setResults(apiMode ? wire.map((r) => wireItemToLocal(r as never)) : (wire as Item[]))
+      }
+      if (online && apiMode) {
+        api
+          .searchItems(q)
+          .then(async (rows) => {
+            await repo.call('applyServerItems', rows)
+            finish(rows as never)
+          })
+          .catch(() => void local().then(finish))
+      } else {
+        void local().then(finish)
+      }
     }, 100)
     return () => {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [repo, query])
+  }, [repo, api, query, online, apiMode])
 
   const subtotal = useMemo(
     () => lines.reduce((sum, l) => sum + qtyTimesUnitCost(l.qtyM, l.unitPrice) - l.discount, 0),
@@ -87,36 +98,75 @@ export function Cart() {
     setSaving(true)
     setError(null)
     setNegWarning(null)
+    const negative = lines.filter((l) => l.qtyM > l.item.stockM)
     try {
-      const negative = lines.filter((l) => l.qtyM > l.item.stockM)
-      timingRef.current = performance.now()
-      await repo.call('postSale', {
-        businessDate: todayISO(),
-        discount,
-        paymentMethod,
-        paid: paymentMethod === 'credit' ? false : paid,
-        note: null,
-        lines: lines.map((l) => ({
-          itemId: l.item.id,
-          qtyM: l.qtyM,
-          unitPrice: l.unitPrice,
-          discount: l.discount,
-        })),
+      const t0 = performance.now()
+      const { source } = await remoteOrLocal({
+        online,
+        session: apiMode,
+        remote: () =>
+          api.postSale({
+            outlet_id: outlet?.id ?? '',
+            business_date: todayISO(),
+            customer_id: null,
+            discount,
+            payment_method: paymentMethod,
+            paid: paymentMethod === 'credit' ? false : paid,
+            note: null,
+            lines: lines.map((l) => ({
+              item_id: l.item.id,
+              qty: l.qtyM / 1000,
+              unit_price: l.unitPrice,
+              discount: l.discount,
+            })),
+            op_id: uuidv7(),
+          }),
+        onRemoteSuccess: async (sale) => {
+          await repo.call('applyServerSale', sale)
+          for (const l of lines) {
+            try {
+              const fresh = await api.getItem(l.item.id)
+              await repo.call('applyServerItems', [fresh])
+            } catch {
+              // read path refreshes on next screen load
+            }
+          }
+        },
+        local: () =>
+          repo.call('postSale', {
+            businessDate: todayISO(),
+            discount,
+            paymentMethod,
+            paid: paymentMethod === 'credit' ? false : paid,
+            note: null,
+            lines: lines.map((l) => ({
+              itemId: l.item.id,
+              qtyM: l.qtyM,
+              unitPrice: l.unitPrice,
+              discount: l.discount,
+            })),
+          }),
       })
-      const elapsed = performance.now() - timingRef.current
+      const elapsed = performance.now() - t0
       if (negative.length > 0) {
         setNegWarning(
           t('sell.negativeStock') + ' (' + negative.map((l) => l.item.name).join(', ') + ')',
         )
       }
-      toast(t('sell.saved', { total: formatIDR(total) }) + ` · ${elapsed < 1000 ? (elapsed / 1000).toFixed(2) : (elapsed / 1000).toFixed(2)}s`)
+      if (source === 'server') {
+        toast(`${t('sell.saved', { total: formatIDR(total) })} · ${t('common.serverData')} · ${(elapsed / 1000).toFixed(2)}s`)
+      } else {
+        flushAgain()
+        toast(`${t('sell.saved', { total: formatIDR(total) })} · ${t('sync.queued')}`)
+      }
       setLines([])
       setDiscount(0)
       setPaymentMethod('cash')
       setPaid(true)
       void refresh()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (err instanceof NetworkError) setError(t('auth.networkError'))
+      else setError(err instanceof Error ? err.message : String(err))
     } finally {
       setSaving(false)
     }

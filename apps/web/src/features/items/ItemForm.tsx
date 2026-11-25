@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { useAppState } from '../../state/AppState'
+import { useAuth, useCapabilities } from '../../state/AuthState'
 import { useI18n } from '../../i18n/I18nProvider'
 import { Button } from '../../components/primitives'
 import { CurrencyInput, Input } from '../../components/inputs'
-import { ErrorView, Loading } from '../../components/state'
-import { parseQty } from '../../lib/money'
-import type { ItemDetail } from '../../db/types'
+import { ErrorView, Loading, Empty } from '../../components/state'
+import { Sheet } from '../../components/Sheet'
+import { parseQty, formatQty, formatIDR } from '../../lib/money'
+import { remoteOrLocal } from '../../api/gateway'
+import { NetworkError } from '../../api/types'
+import type { ItemDetail, StockMove } from '../../db/types'
 
 interface UnitDraft {
   name: string
@@ -16,7 +20,10 @@ interface UnitDraft {
 export function ItemForm() {
   const { id } = useParams()
   const isEdit = id !== undefined
-  const { repo, toast, refresh } = useAppState()
+  const { repo, toast, refresh, online, apiMode, flushAgain } = useAppState()
+  const { api } = useAuth()
+  const { can } = useCapabilities()
+  const showCost = can('cost.read')
   const { t, locale } = useI18n()
   const navigate = useNavigate()
 
@@ -36,38 +43,57 @@ export function ItemForm() {
   const [error, setError] = useState<string | null>(null)
   const [fieldError, setFieldError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [ledgerOpen, setLedgerOpen] = useState(false)
+  const [ledgerRows, setLedgerRows] = useState<StockMove[] | null>(null)
+  const [ledgerSource, setLedgerSource] = useState<'server' | 'local'>('local')
 
   useEffect(() => {
     if (!repo) return
+    // Categories: local + server merge when online.
     void repo.call('listCategories').then(setCategories)
+    if (online && apiMode) {
+      void api
+        .cashCategories()
+        .then(async (cats) => {
+          await repo.call('applyServerCategories', cats)
+          setCategories(await repo.call('listCategories'))
+        })
+        .catch(() => undefined)
+    }
     if (isEdit && id) {
-      repo
-        .call('getItem', id)
-        .then((d) => {
-          if (d) {
-            setDetail(d)
-            setName(d.name)
-            setSku(d.sku ?? '')
-            setBarcode(d.barcodes.map((b) => b.barcode).join(', '))
-            setCategoryId(d.categoryId ?? '')
-            setBaseUnit(d.baseUnit)
-            setUnits(d.units.map((u) => ({ name: u.name, factorText: String(u.factorM / 1000).replace('.', ',') })))
-            setSalePrice(d.salePrice)
-            setCost(d.costAvg)
-            setMinStockText(d.minStockM > 0 ? String(d.minStockM / 1000).replace('.', ',') : '')
-            setActive(d.active)
-          }
-          setLoading(false)
-        })
-        .catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : String(err))
-          setLoading(false)
-        })
+      const localRead = (): Promise<ItemDetail | null> => repo.call('getItem', id)
+      const finish = (d: ItemDetail | null) => {
+        if (d) {
+          setDetail(d)
+          setName(d.name)
+          setSku(d.sku ?? '')
+          setBarcode(d.barcodes.map((b) => b.barcode).join(', '))
+          setCategoryId(d.categoryId ?? '')
+          setBaseUnit(d.baseUnit)
+          setUnits(d.units.map((u) => ({ name: u.name, factorText: String(u.factorM / 1000).replace('.', ',') })))
+          setSalePrice(d.salePrice)
+          setCost(d.costAvg)
+          setMinStockText(d.minStockM > 0 ? String(d.minStockM / 1000).replace('.', ',') : '')
+          setActive(d.active)
+        }
+        setLoading(false)
+      }
+      if (online && apiMode) {
+        api
+          .getItem(id)
+          .then(async (wire) => {
+            await repo.call('applyServerItems', [wire])
+            await void localRead().then(finish)
+          })
+          .catch(() => void localRead().then(finish))
+      } else {
+        void localRead().then(finish)
+      }
     } else {
       setBaseUnit('pcs')
       setLoading(false)
     }
-  }, [repo, id, isEdit])
+  }, [repo, api, id, isEdit, online, apiMode])
 
   if (loading) return <Loading />
   if (error) return <ErrorView message={error} onRetry={() => navigate('/barang')} />
@@ -97,7 +123,19 @@ export function ItemForm() {
 
     setSaving(true)
     try {
-      const input = {
+      const wire = {
+        name,
+        sku: sku.trim() === '' ? null : sku.trim(),
+        barcodes,
+        category_id: categoryId === '' ? null : categoryId,
+        base_unit: baseUnit.trim(),
+        units: unitDrafts.map((u) => ({ name: u.name, factor: u.factorM! / 1000 })),
+        sale_price: salePrice,
+        cost,
+        min_stock: minStockM / 1000,
+        active,
+      }
+      const localInput = {
         name,
         sku: sku.trim() === '' ? null : sku.trim(),
         barcodes,
@@ -109,19 +147,92 @@ export function ItemForm() {
         minStockM,
         active,
       }
-      if (isEdit && id) {
-        await repo.call('updateItem', id, input)
-      } else {
-        await repo.call('createItem', input)
-      }
+      const { source } = await remoteOrLocal({
+        online,
+        session: apiMode,
+        remote: () => (isEdit && id ? api.updateItem(id, wire) : api.createItem(wire)),
+        onRemoteSuccess: async (item) => {
+          await repo.call('applyServerItems', [item])
+        },
+        local: () => (isEdit && id ? repo.call('updateItem', id, localInput) : repo.call('createItem', localInput)),
+      })
+      if (source === 'local') flushAgain()
       toast(t('form.itemSaved'))
       void refresh()
       navigate('/barang')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (msg.startsWith('VALIDATION')) setFieldError(msg.replace('VALIDATION ', ''))
+      if (err instanceof NetworkError) setError(t('auth.networkError'))
+      else if (msg.startsWith('VALIDATION')) setFieldError(msg.replace('VALIDATION ', ''))
       else setError(msg)
       setSaving(false)
+    }
+  }
+
+  const openLedger = () => {
+    if (!repo || !id) return
+    setLedgerOpen(true)
+    setLedgerRows(null)
+    const localRead = (): Promise<StockMove[]> =>
+      repo.call('getItem', id).then((d: ItemDetail | null) => d?.stockMoves ?? [])
+    if (online && apiMode) {
+      repo
+        .call('getOutlet')
+        .then((outlet) => api.ledger(id, outlet?.id ?? ''))
+        .then(async (res) => {
+          const rows: StockMove[] = res.rows.map((r, i) => ({
+            id: String(i),
+            outletId: '',
+            itemId: id,
+            qtyM: Math.round(r.qty_delta * 1000),
+            unitCost: r.unit_cost ?? 0,
+            type: r.type as StockMove['type'],
+            refType: r.ref_type ?? null,
+            refId: r.ref_id ?? null,
+            businessDate: r.business_date,
+            note: r.note ?? null,
+            createdAt: r.business_date,
+          }))
+          await repo.call('setServerCache', `ledger:${id}`, res)
+          setLedgerRows(rows)
+          setLedgerSource('server')
+        })
+        .catch(() =>
+          void localRead().then((rows) => {
+            setLedgerRows(rows)
+            setLedgerSource('local')
+          }),
+        )
+    } else {
+      repo
+        .call('getServerCache', `ledger:${id}`)
+        .then((cached) => {
+          if (cached) {
+            const res = cached.payload as { rows: { business_date: string; type: string; qty_delta: number; unit_cost: number | null; ref_type: string | null; ref_id: string | null; note: string | null }[] }
+            setLedgerRows(
+              res.rows.map((r, i) => ({
+                id: String(i),
+                outletId: '',
+                itemId: id!,
+                qtyM: Math.round(r.qty_delta * 1000),
+                unitCost: r.unit_cost ?? 0,
+                type: r.type as StockMove['type'],
+                refType: r.ref_type ?? null,
+                refId: r.ref_id ?? null,
+                businessDate: r.business_date,
+                note: r.note ?? null,
+                createdAt: r.business_date,
+              })),
+            )
+            setLedgerSource('local')
+          } else {
+            void localRead().then((rows) => {
+              setLedgerRows(rows)
+              setLedgerSource('local')
+            })
+          }
+        })
+        .catch(() => void localRead().then((rows) => setLedgerRows(rows)))
     }
   }
 
@@ -225,9 +336,11 @@ export function ItemForm() {
         <div style={{ flex: '1 1 200px' }}>
           <CurrencyInput label={t('form.salePrice')} value={salePrice} onValueChange={setSalePrice} />
         </div>
-        <div style={{ flex: '1 1 200px' }}>
-          <CurrencyInput label={t('form.cost')} value={cost} onValueChange={setCost} />
-        </div>
+        {showCost && (
+          <div style={{ flex: '1 1 200px' }}>
+            <CurrencyInput label={t('form.cost')} value={cost} onValueChange={setCost} />
+          </div>
+        )}
       </div>
       <Input
         label={t('form.minStock')}
@@ -256,6 +369,36 @@ export function ItemForm() {
       <Button block disabled={saving || name.trim() === '' || baseUnit.trim() === ''} onClick={() => void save()}>
         {t('common.save')}
       </Button>
+
+      {isEdit && (
+        <Button variant="secondary" block onClick={openLedger}>
+          {t('common.viewLedger')}
+        </Button>
+      )}
+
+      <Sheet open={ledgerOpen} title={t('itemledger.title')} onClose={() => setLedgerOpen(false)}>
+        <p className="muted" style={{ margin: 0, fontSize: 'var(--text-xs)' }}>
+          {ledgerSource === 'server' ? t('common.serverData') : t('common.localData')}
+        </p>
+        {ledgerRows === null && <Loading />}
+        {ledgerRows !== null && ledgerRows.length === 0 && <Empty icon="📦">{t('itemledger.empty')}</Empty>}
+        {ledgerRows !== null && ledgerRows.length > 0 && (
+          <div className="card-list">
+            {ledgerRows.map((m) => (
+              <div key={m.id} className="card-row" style={{ cursor: 'default' }}>
+                <div className="card-row__main">
+                  <span className="card-row__title">{m.type === 'in' ? '↑ in' : m.type === 'sale' ? '↓ jual' : m.type === 'adjust' ? '± sesuaikan' : m.type === 'loss' ? '↓ rugi' : m.type}</span>
+                  <span className="card-row__sub">{m.businessDate}</span>
+                </div>
+                <div className="card-row__end">
+                  <span className="num">{formatQty(m.qtyM)}</span>
+                  {showCost && m.unitCost > 0 ? <span className="muted num">@{formatIDR(m.unitCost)}</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Sheet>
     </div>
   )
 }

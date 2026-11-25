@@ -1,21 +1,26 @@
 import { useEffect, useState } from 'react'
 import { useAppState } from '../../state/AppState'
+import { useAuth, useCapabilities } from '../../state/AuthState'
 import { useI18n } from '../../i18n/I18nProvider'
 import { Sheet } from '../../components/Sheet'
 import { Badge } from '../../components/primitives'
 import { Empty, ErrorView, Loading } from '../../components/state'
 import { formatIDR } from '../../lib/money'
 import { formatDate } from '../../lib/date'
-import { currentMonth, formatMonth, recentMonths } from '../../lib/date'
+import { currentMonth, formatMonth, monthRange, recentMonths } from '../../lib/date'
+import type { ApiLabaRugi, ApiDrillRow } from '../../api/types'
 import type { DrillRow, LabaRugi as LabaRugiData } from '../../db/types'
 
 type DrillKind = 'revenue' | 'hpp' | 'opex' | null
 
 export function LabaRugi() {
-  const { repo } = useAppState()
+  const { repo, online, apiMode, dataTick } = useAppState()
+  const { api } = useAuth()
+  const { role } = useCapabilities()
   const { t, locale } = useI18n()
   const [month, setMonth] = useState(currentMonth())
   const [report, setReport] = useState<LabaRugiData | null>(null)
+  const [source, setSource] = useState<'server' | 'local'>('local')
   const [error, setError] = useState<string | null>(null)
   const [drill, setDrill] = useState<DrillKind>(null)
   const [drillRows, setDrillRows] = useState<DrillRow[] | null>(null)
@@ -24,28 +29,116 @@ export function LabaRugi() {
   const reload = () => {
     if (!repo) return
     setError(null)
-    repo
-      .call('labaRugi', month)
-      .then(setReport)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+    const { from, to } = monthRange(month)
+    const localCompute = (): Promise<LabaRugiData> => repo.call('labaRugi', month)
+    const localRead = (): Promise<LabaRugiData> =>
+      repo
+        .call('getServerCache', `report:${month}`)
+        .then((cached) => (cached ? (cached.payload as LabaRugiData) : localCompute()))
+    if (online && apiMode) {
+      // The numbers come from the server, not the local computation.
+      api
+        .labaRugi(from, to)
+        .then(async (res: ApiLabaRugi) => {
+          const mapped: LabaRugiData = {
+            month,
+            revenue: res.revenue,
+            hpp: res.hpp,
+            grossProfit: res.gross_profit,
+            opex: res.opex,
+            netProfit: res.net_profit,
+            unpaidRevenue: res.unpaid_revenue,
+          }
+          await repo.call('setServerCache', `report:${month}`, mapped)
+          setReport(mapped)
+          setSource('server')
+        })
+        .catch(() => {
+          void localRead().then((r) => {
+            setReport(r)
+            setSource('local')
+          })
+        })
+    } else {
+      void localRead().then((r) => {
+        setReport(r)
+        setSource('local')
+      })
+    }
   }
 
-  useEffect(reload, [repo, month])
+  useEffect(reload, [repo, api, month, online, apiMode, dataTick])
+
+  const mapDrillRow = (r: ApiDrillRow): DrillRow => {
+    const amount = Number(r.amount ?? r.total ?? 0)
+    const label =
+      typeof r.name === 'string'
+        ? r.name
+        : typeof r.number === 'string'
+          ? r.number
+          : typeof r.label === 'string'
+            ? r.label
+            : typeof r.category === 'string'
+              ? r.category
+              : '#'
+    return {
+      id: String(r.sale_id ?? r.id ?? r.label ?? Math.random()),
+      label,
+      sublabel:
+        typeof r.qty === 'number' && typeof r.unit_cost === 'number'
+          ? `${r.qty} × ${formatIDR(r.unit_cost)}`
+          : typeof r.number === 'string' && typeof r.name === 'string'
+            ? r.number
+            : (r.note as string | null) ?? null,
+      amount,
+      flagged: r.unpaid === true ? 'unpaid' : r.mode === 'daily_total' ? 'daily_total' : (r.mode as string | null) ?? null,
+      businessDate: String(r.business_date ?? ''),
+    }
+  }
 
   const openDrill = (kind: Exclude<DrillKind, null>) => {
     if (!repo) return
     setDrill(kind)
     setDrillRows(null)
     setDrillError(null)
-    const method = kind === 'revenue' ? 'drillRevenue' : kind === 'hpp' ? 'drillHpp' : 'drillOpex'
-    repo
-      .call(method, month)
-      .then(setDrillRows)
-      .catch((err: unknown) => setDrillError(err instanceof Error ? err.message : String(err)))
+    const localDrill = (): Promise<DrillRow[]> => {
+      const method = kind === 'revenue' ? 'drillRevenue' : kind === 'hpp' ? 'drillHpp' : 'drillOpex'
+      return repo.call(method, month)
+    }
+    if (online && apiMode) {
+      api
+        .drill(kind)
+        .then(async (rows) => {
+          await repo.call('setServerCache', `drill:${kind}:${month}`, rows)
+          setDrillRows(rows.map(mapDrillRow))
+        })
+        .catch(() => {
+          void localDrill().then(setDrillRows)
+        })
+    } else {
+      repo
+        .call('getServerCache', `drill:${kind}:${month}`)
+        .then((cached) => {
+          if (cached && Array.isArray(cached.payload)) setDrillRows((cached.payload as ApiDrillRow[]).map(mapDrillRow))
+          else void localDrill().then(setDrillRows)
+        })
+        .catch(() => void localDrill().then(setDrillRows))
+    }
   }
 
   const months = recentMonths(12)
   const hasData = report !== null && (report.revenue !== 0 || report.opex !== 0 || report.hpp !== 0)
+
+  if (role === 'staff') {
+    return (
+      <div className="screen">
+        <div className="screen__header">
+          <h1 className="screen__title">{t('reports.title')}</h1>
+        </div>
+        <Empty icon="🔒">{t('auth.noAccess')}</Empty>
+      </div>
+    )
+  }
 
   const lines: { key: string; label: string; amount: number; drill: DrillKind; strong?: boolean }[] = report
     ? [
@@ -65,6 +158,9 @@ export function LabaRugi() {
       <div className="screen__header">
         <h1 className="screen__title">{t('reports.title')}</h1>
         <div className="screen__actions">
+          <span className="muted" style={{ fontSize: 'var(--text-xs)' }}>
+            {source === 'server' ? t('common.serverData') : t('common.localData')}
+          </span>
           <select className="input" style={{ width: 'auto' }} value={month} onChange={(e) => setMonth(e.target.value)} aria-label={t('reports.month')}>
             {months.map((m) => (
               <option key={m} value={m}>

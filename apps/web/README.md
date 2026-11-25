@@ -2,6 +2,16 @@
 
 React 19 + Vite + TypeScript front end for Stokku. Bahasa Indonesia default, English secondary. No UI kit — plain CSS with design tokens in `src/styles/tokens.css`.
 
+## API wiring (demo-spine increment)
+
+- `src/api/client.ts` is the single HTTP layer: base URL from `VITE_API_URL` (default `http://localhost:8099`), `/v1` prefix, one place for auth headers, and **401 → refresh once → retry → logout** when the refresh fails. Components never call `fetch`.
+- Auth screens (`/login`) do login + signup against the real API. **Token storage: access token + session in `sessionStorage` (per-tab, survives reloads — including offline reloads — until the 15-min access token expires), refresh token in `localStorage`** (`stokku.refresh_token`); a reload restores the session from the per-tab cache and refreshes when needed.
+- Read path (items, item detail/ledger, cash book, sales list, laba rugi + drill-downs) hits the API when online and **writes responses through to the local SQLite store** (`server_cache` table + item rows), so offline still renders the last known numbers.
+- Write path is remote-first when online: the API response is cached locally. On network failure the write lands in the local store optimistically **and queues an outbox op** exactly as before.
+- Outbox flush (`src/sync/flush.ts`): when online with a session, queued ops replay against their contract endpoints in client order. An op is removed **only after a confirmed 2xx**; network failure keeps it queued and the retry sends the **same op_id**, so the server dedupes (verified for `/sales` and `/stock-moves`; `POST /items` and `POST /cash-entries` have no op_id in the contract — see the known-gaps note). Rejected ops (4xx/5xx) are marked failed and stop blocking the queue. **No `/sync/push` is called yet** — that endpoint is Backend's next increment; queue-and-retry is this pass's contract.
+- Roles: `/me` capabilities drive the UI — staff see no reports nav, no cost fields, no HPP/profit (the API 403s them anyway).
+- The sync dot reflects reality: Offline (red) > "Belum sinkron" when ops are queued > "Tersinkron" only when the API confirmed everything. In local-only mode it says "Mode lokal".
+
 ## Storage choice (T-201/T-202)
 
 **sql.js (SQLite compiled to WASM) running in a dedicated Web Worker, persisted to OPFS** (Origin Private File System) on `stokku.db`.
@@ -30,8 +40,8 @@ src/
 
 ```sh
 pnpm install
-pnpm dev        # vite dev server
-pnpm test       # vitest (money formatter, posting engine, atomicity)
+pnpm dev        # vite dev server (set VITE_API_URL to point at the API; default http://localhost:8099)
+pnpm test       # vitest (money formatter, posting engine, atomicity, API client, outbox flush)
 pnpm build      # tsc + vite production build
 ```
 

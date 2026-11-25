@@ -293,6 +293,7 @@ export function createItem(db: Db, input: ItemInput): Item {
     }
     enqueueOutboxOp(db, opId, 'item.create', {
       op_id: opId,
+      local_id: id,
       name: input.name.trim(),
       sku: input.sku || null,
       barcodes: input.barcodes.filter((b) => b.trim() !== ''),
@@ -494,6 +495,7 @@ export function stockIn(db: Db, input: StockInInput): StockMove {
     db.run('UPDATE item SET cost_avg = ?, updated_at = ? WHERE id = ?', [newCostAvg, now, input.itemId])
     enqueueOutboxOp(db, opId, 'stock_move.create', {
       op_id: opId,
+      local_id: moveId,
       item_id: input.itemId,
       outlet_id: outletId,
       type: 'in',
@@ -586,6 +588,7 @@ export function postSale(db: Db, input: SaleInput): Sale {
 
     enqueueOutboxOp(db, opId, 'sale.create', {
       op_id: opId,
+      local_id: saleId,
       outlet_id: outletId,
       business_date: input.businessDate,
       customer_id: null,
@@ -677,6 +680,7 @@ export function addCashEntry(db: Db, input: CashEntryInput): CashEntry {
     )
     enqueueOutboxOp(db, opId, 'cash_entry.create', {
       op_id: opId,
+      local_id: id,
       outlet_id: outletId,
       direction: input.direction,
       amount: input.amount,
@@ -907,6 +911,450 @@ export function seedDemo(db: Db): void {
   })
 }
 
+/** Local-row cleanup after the server confirmed an op (server rows are cached instead). */
+export function deleteStockMoveRow(db: Db, id: string): void {
+  db.run('DELETE FROM stock_move WHERE id = ?', [id])
+}
+
+export function deleteCashEntryRow(db: Db, id: string): void {
+  db.run('DELETE FROM cash_entry WHERE id = ?', [id])
+}
+
+/** Remove a local optimistic sale and its lines, auto cash entry and history moves. */
+export function deleteLocalSale(db: Db, saleId: string): void {
+  db.transaction(() => {
+    db.run('DELETE FROM sale_line WHERE sale_id = ?', [saleId])
+    db.run('DELETE FROM cash_entry WHERE ref_type = ? AND ref_id = ?', ['sale', saleId])
+    db.run('DELETE FROM stock_move WHERE ref_type = ? AND ref_id = ?', ['sale', saleId])
+    db.run('DELETE FROM sale WHERE id = ?', [saleId])
+  })
+}
+
+/** ---------- outbox (sync increment) ---------- */
+
+export interface PendingOp {
+  opId: string
+  type: string
+  payload: Record<string, unknown>
+  clientTs: string
+}
+
+/** Pending ops in client_ts order — the flush engine posts them in this order. */
+export function pendingOutboxList(db: Db, limit = 50): PendingOp[] {
+  return db
+    .all<{ op_id: string; type: string; payload: string; client_ts: string }>(
+      "SELECT op_id, type, payload, client_ts FROM outbox WHERE status = 'pending' ORDER BY client_ts, rowid LIMIT ?",
+      [limit],
+    )
+    .map((r) => ({ opId: r.op_id, type: r.type, payload: JSON.parse(r.payload) as Record<string, unknown>, clientTs: r.client_ts }))
+}
+
+/** Remove a queued op after the API confirmed it. Only confirmed success may call this. */
+export function clearOutboxOp(db: Db, opId: string): void {
+  db.run('DELETE FROM outbox WHERE op_id = ?', [opId])
+}
+
+/** Mark an op as rejected by the server (4xx/5xx) so it stops blocking the queue. */
+export function markOutboxFailed(db: Db, opId: string, reason: string): void {
+  db.run('UPDATE outbox SET status = ?, fail_reason = ? WHERE op_id = ?', ['failed', reason.slice(0, 300), opId])
+}
+
+/** ---------- server session + cache (demo-spine API increment) ---------- */
+
+/**
+ * Bind the local store to a server identity. When the local store belongs to a
+ * different tenant (or has local-only data), business data is wiped so the
+ * cache starts clean from the server's truth.
+ */
+export function setServerSession(
+  db: Db,
+  tenant: { id: string; name: string },
+  outlet: { id: string; name: string; timezone: string },
+): 'fresh' | 'kept' {
+  const currentTenantId = getMeta(db, 'tenant_id')
+  const serverMode = getMeta(db, 'api_tenant_id')
+  if (currentTenantId !== tenant.id || serverMode !== tenant.id) {
+    const hasAnyData = db.get<{ n: number }>('SELECT COUNT(*) AS n FROM item')!.n > 0
+    if (hasAnyData || currentTenantId !== null) {
+      resetAll(db)
+    }
+    db.transaction(() => {
+      db.run('INSERT INTO tenant (id, name, tax_rate, business_type, created_at) VALUES (?, ?, 0, NULL, ?)', [
+        tenant.id,
+        tenant.name,
+        new Date().toISOString(),
+      ])
+      db.run('INSERT INTO outlet (id, tenant_id, name, timezone) VALUES (?, ?, ?, ?)', [
+        outlet.id,
+        tenant.id,
+        outlet.name,
+        outlet.timezone,
+      ])
+      setMeta(db, 'tenant_id', tenant.id)
+      setMeta(db, 'outlet_id', outlet.id)
+      setMeta(db, 'onboarded', 'true')
+      setMeta(db, 'api_tenant_id', tenant.id)
+    })
+    return 'fresh'
+  }
+  return 'kept'
+}
+
+export function getServerCache(db: Db, key: string): { payload: unknown; fetched_at: string } | null {
+  const row = db.get<{ payload: string; fetched_at: string }>('SELECT payload, fetched_at FROM server_cache WHERE key = ?', [key])
+  if (!row) return null
+  return { payload: JSON.parse(row.payload), fetched_at: row.fetched_at }
+}
+
+export function setServerCache(db: Db, key: string, payload: unknown): void {
+  db.run(
+    'INSERT INTO server_cache (key, payload, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at',
+    [key, JSON.stringify(payload), new Date().toISOString()],
+  )
+}
+
+/** Wire-format item row (snake_case, decimal qty) — subset of the API contract shape. */
+export interface ServerItemRow {
+  id: string
+  sku: string | null
+  name: string
+  category_id: string | null
+  base_unit: string
+  sale_price: number
+  cost_avg?: number
+  min_stock: number
+  active: boolean
+  stock: number
+  low_stock?: boolean
+  units?: { name: string; factor: number }[]
+  barcodes?: string[]
+  updated_at?: string
+}
+
+function qtyToMilli(q: number): number {
+  return Math.round(q * 1000)
+}
+
+/** Upsert server item rows into the local cache (server ids are the ids). */
+export function applyServerItems(db: Db, items: ServerItemRow[]): void {
+  const outletId = getMeta(db, 'outlet_id')
+  if (!outletId) throw new Error('NOT_ONBOARDED')
+  db.transaction(() => {
+    for (const it of items) {
+      const minStockM = qtyToMilli(it.min_stock ?? 0)
+      const stockM = qtyToMilli(it.stock ?? 0)
+      const existing = db.get<{ id: string }>('SELECT id FROM item WHERE id = ?', [it.id])
+      if (existing) {
+        db.run(
+          `UPDATE item SET sku = ?, name = ?, category_id = ?, base_unit = ?, sale_price = ?, cost_avg = ?, min_stock_m = ?, active = ?, updated_at = ? WHERE id = ?`,
+          [
+            it.sku ?? null,
+            it.name,
+            it.category_id ?? null,
+            it.base_unit,
+            it.sale_price,
+            it.cost_avg ?? 0,
+            minStockM,
+            it.active ? 1 : 0,
+            it.updated_at ?? new Date().toISOString(),
+            it.id,
+          ],
+        )
+      } else {
+        db.run(
+          `INSERT INTO item (id, sku, name, category_id, base_unit, sale_price, cost_avg, min_stock_m, active, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            it.id,
+            it.sku ?? null,
+            it.name,
+            it.category_id ?? null,
+            it.base_unit,
+            it.sale_price,
+            it.cost_avg ?? 0,
+            minStockM,
+            it.active ? 1 : 0,
+            it.updated_at ?? new Date().toISOString(),
+          ],
+        )
+      }
+      // Stock projection comes from the server's number.
+      db.run(
+        `INSERT INTO stock_level (outlet_id, item_id, qty_m) VALUES (?, ?, ?)
+         ON CONFLICT(outlet_id, item_id) DO UPDATE SET qty_m = excluded.qty_m`,
+        [outletId, it.id, stockM],
+      )
+      if (it.barcodes) {
+        db.run('DELETE FROM item_barcode WHERE item_id = ?', [it.id])
+        for (const b of it.barcodes) {
+          if (b.trim() === '') continue
+          db.run('INSERT INTO item_barcode (id, item_id, barcode) VALUES (?, ?, ?)', [uuidv7(), it.id, b])
+        }
+      }
+      if (it.units) {
+        db.run('DELETE FROM item_unit WHERE item_id = ?', [it.id])
+        for (const u of it.units) {
+          const factorM = qtyToMilli(u.factor)
+          if (u.name.trim() === '' || factorM <= 0) continue
+          db.run('INSERT INTO item_unit (id, item_id, name, factor_m) VALUES (?, ?, ?, ?)', [uuidv7(), it.id, u.name, factorM])
+        }
+      }
+    }
+  })
+}
+
+export function applyServerCategories(db: Db, cats: { id: string; name: string; sort?: number }[]): void {
+  db.transaction(() => {
+    for (const c of cats) {
+      const existing = db.get<{ id: string }>('SELECT id FROM category WHERE id = ?', [c.id])
+      if (existing) {
+        db.run('UPDATE category SET name = ?, sort = ? WHERE id = ?', [c.name, c.sort ?? 0, c.id])
+      } else {
+        db.run('INSERT INTO category (id, name, sort) VALUES (?, ?, ?)', [c.id, c.name, c.sort ?? 0])
+      }
+    }
+  })
+}
+
+export interface ServerStockMoveRow {
+  id: string
+  outlet_id: string
+  item_id: string
+  qty: number
+  unit_cost: number | null
+  type: string
+  ref_type?: string | null
+  ref_id?: string | null
+  business_date: string
+  note?: string | null
+  created_at?: string
+}
+
+/** Cache a server stock move row (history display); stock levels come via applyServerItems. */
+export function applyServerStockMove(db: Db, move: ServerStockMoveRow): void {
+  const existing = db.get<{ id: string }>('SELECT id FROM stock_move WHERE id = ?', [move.id])
+  if (existing) return
+  db.run(
+    `INSERT INTO stock_move (id, outlet_id, item_id, qty_m, unit_cost, type, ref_type, ref_id, business_date, note, created_at, op_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    [
+      move.id,
+      move.outlet_id,
+      move.item_id,
+      qtyToMilli(move.qty),
+      move.unit_cost,
+      move.type,
+      move.ref_type ?? null,
+      move.ref_id ?? null,
+      move.business_date,
+      move.note ?? null,
+      move.created_at ?? new Date().toISOString(),
+    ],
+  )
+}
+
+export interface ServerSaleRow {
+  id: string
+  number: string
+  outlet_id: string
+  business_date: string
+  total: number
+  discount: number
+  payment_method: string
+  paid: boolean
+  mode: string
+  note?: string | null
+  voided_at?: string | null
+  lines?: { item_id: string; qty: number; unit_price: number; discount: number; cost_at_sale?: number }[]
+  cash_entry_id?: string | null
+  payment?: { method: string; amount_gross: number; status: string } | null
+}
+
+/** Cache a server sale (lines + cash entry) so offline views show server truth. */
+export function applyServerSale(db: Db, sale: ServerSaleRow): void {
+  const outletId = getMeta(db, 'outlet_id')
+  if (!outletId) throw new Error('NOT_ONBOARDED')
+  const existing = db.get<{ id: string }>('SELECT id FROM sale WHERE id = ?', [sale.id])
+  const number = Number(String(sale.number).replace(/\D/g, '')) || 0
+  db.transaction(() => {
+    if (existing) {
+      db.run(
+        `UPDATE sale SET number = ?, total = ?, discount = ?, payment_method = ?, paid = ?, mode = ?, note = ?, voided_at = ? WHERE id = ?`,
+        [
+          number,
+          sale.total,
+          sale.discount,
+          sale.payment_method,
+          sale.paid ? 1 : 0,
+          sale.mode,
+          sale.note ?? null,
+          sale.voided_at ?? null,
+          sale.id,
+        ],
+      )
+      db.run('DELETE FROM sale_line WHERE sale_id = ?', [sale.id])
+    } else {
+      db.run(
+        `INSERT INTO sale (id, outlet_id, number, total, discount, payment_method, paid, mode, business_date, voided_at, void_reason, note, op_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)`,
+        [
+          sale.id,
+          sale.outlet_id,
+          number,
+          sale.total,
+          sale.discount,
+          sale.payment_method,
+          sale.paid ? 1 : 0,
+          sale.mode,
+          sale.business_date,
+          sale.voided_at ?? null,
+          sale.note ?? null,
+          new Date().toISOString(),
+        ],
+      )
+    }
+    for (const l of sale.lines ?? []) {
+      db.run(
+        `INSERT INTO sale_line (id, sale_id, item_id, qty_m, unit_price, discount, cost_at_sale)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [uuidv7(), sale.id, l.item_id, qtyToMilli(l.qty), l.unit_price, l.discount, l.cost_at_sale ?? 0],
+      )
+    }
+    if (sale.cash_entry_id) {
+      const cashExists = db.get<{ id: string }>('SELECT id FROM cash_entry WHERE id = ?', [sale.cash_entry_id])
+      if (!cashExists) {
+        db.run(
+          `INSERT INTO cash_entry (id, outlet_id, direction, amount, category, method, ref_type, ref_id, business_date, note, op_id, created_at)
+           VALUES (?, ?, 'in', ?, 'penjualan', ?, 'sale', ?, ?, NULL, NULL, ?)`,
+          [
+            sale.cash_entry_id,
+            sale.outlet_id,
+            sale.payment?.amount_gross ?? sale.total,
+            sale.payment?.method ?? sale.payment_method,
+            sale.id,
+            sale.business_date,
+            new Date().toISOString(),
+          ],
+        )
+      }
+    }
+  })
+}
+
+export interface ServerCashEntryRow {
+  id: string
+  outlet_id: string
+  direction: 'in' | 'out'
+  amount: number
+  category: string
+  method: string
+  ref_type?: string | null
+  ref_id?: string | null
+  business_date: string
+  note?: string | null
+  created_at?: string
+}
+
+export function applyServerCashEntry(db: Db, entry: ServerCashEntryRow): void {
+  const existing = db.get<{ id: string }>('SELECT id FROM cash_entry WHERE id = ?', [entry.id])
+  if (existing) {
+    db.run(
+      `UPDATE cash_entry SET direction = ?, amount = ?, category = ?, method = ?, ref_type = ?, ref_id = ?, business_date = ?, note = ? WHERE id = ?`,
+      [
+        entry.direction,
+        entry.amount,
+        entry.category,
+        entry.method,
+        entry.ref_type ?? null,
+        entry.ref_id ?? null,
+        entry.business_date,
+        entry.note ?? null,
+        entry.id,
+      ],
+    )
+    return
+  }
+  db.run(
+    `INSERT INTO cash_entry (id, outlet_id, direction, amount, category, method, ref_type, ref_id, business_date, note, op_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+    [
+      entry.id,
+      entry.outlet_id,
+      entry.direction,
+      entry.amount,
+      entry.category,
+      entry.method,
+      entry.ref_type ?? null,
+      entry.ref_id ?? null,
+      entry.business_date,
+      entry.note ?? null,
+      entry.created_at ?? new Date().toISOString(),
+    ],
+  )
+}
+
+/** ---------- offline id remapping ---------- */
+
+/**
+ * Replace a local row id with the server id everywhere it is referenced.
+ * Must run outside a transaction with foreign_keys off (PKs are being rewritten).
+ */
+export function remapItemId(db: Db, localId: string, serverId: string): void {
+  if (localId === serverId) return
+  const row = db.get<{ server_id: string }>('SELECT server_id FROM id_map WHERE local_id = ?', [localId])
+  if (row) return // already remapped
+  db.exec('PRAGMA foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      db.run('UPDATE item SET id = ? WHERE id = ?', [serverId, localId])
+      db.run('UPDATE item_unit SET item_id = ? WHERE item_id = ?', [serverId, localId])
+      db.run('UPDATE item_barcode SET item_id = ? WHERE item_id = ?', [serverId, localId])
+      db.run('UPDATE stock_move SET item_id = ? WHERE item_id = ?', [serverId, localId])
+      db.run('UPDATE stock_level SET item_id = ? WHERE item_id = ?', [serverId, localId])
+      db.run('UPDATE sale_line SET item_id = ? WHERE item_id = ?', [serverId, localId])
+      db.run('INSERT INTO id_map (local_id, server_id) VALUES (?, ?)', [localId, serverId])
+    })
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+/** Resolve a possibly-local id to its server id (one hop). */
+export function resolveIdMap(db: Db, localId: string): string {
+  const row = db.get<{ server_id: string }>('SELECT server_id FROM id_map WHERE local_id = ?', [localId])
+  return row?.server_id ?? localId
+}
+
+/** Local sale rows for a month (offline sales-list fallback: queued sales not yet on the server). */
+export function listSalesLocal(db: Db, month: string): Sale[] {
+  const { from, to } = monthRange(month)
+  return db
+    .all<Record<string, unknown>>(
+      'SELECT * FROM sale WHERE business_date BETWEEN ? AND ? ORDER BY business_date DESC, number DESC',
+      [from, to],
+    )
+    .map((r) => {
+      const lines = db
+        .all<Record<string, unknown>>('SELECT * FROM sale_line WHERE sale_id = ? ORDER BY rowid', [String(r.id)])
+        .map(rowToSaleLine)
+      return {
+        id: String(r.id),
+        number: Number(r.number),
+        total: Number(r.total ?? 0),
+        discount: Number(r.discount ?? 0),
+        paymentMethod: String(r.payment_method) as Sale['paymentMethod'],
+        paid: Boolean(r.paid),
+        mode: String(r.mode) as Sale['mode'],
+        businessDate: String(r.business_date),
+        voidedAt: (r.voided_at as string | null) ?? null,
+        note: (r.note as string | null) ?? null,
+        createdAt: String(r.created_at),
+        lines,
+        cashEntryId: null,
+      }
+    })
+}
+
 /**
  * RPC method table shared by the OPFS worker and the in-memory fallback.
  * The main thread never calls SQL directly — only these methods (T-202).
@@ -928,6 +1376,7 @@ export const repoMethods = {
   stockIn,
   postSale,
   getSale,
+  listSalesLocal,
   addCashEntry,
   listCashEntries,
   cashCategories: (_db: Db) => cashCategories(),
@@ -936,7 +1385,23 @@ export const repoMethods = {
   drillHpp,
   drillOpex,
   pendingOutboxCount,
+  pendingOutboxList,
   listOutbox,
+  clearOutboxOp,
+  markOutboxFailed,
+  setServerSession,
+  getServerCache,
+  setServerCache,
+  applyServerItems,
+  applyServerCategories,
+  applyServerStockMove,
+  applyServerSale,
+  applyServerCashEntry,
+  remapItemId,
+  resolveIdMap,
+  deleteStockMoveRow,
+  deleteCashEntryRow,
+  deleteLocalSale,
   seedDemo,
   resetAll,
 } as const
@@ -957,6 +1422,19 @@ export const MUTATING_METHODS = new Set<RepoMethodName>([
   'stockIn',
   'postSale',
   'addCashEntry',
+  'setServerSession',
+  'setServerCache',
+  'clearOutboxOp',
+  'markOutboxFailed',
+  'applyServerItems',
+  'applyServerCategories',
+  'applyServerStockMove',
+  'applyServerSale',
+  'applyServerCashEntry',
+  'remapItemId',
+  'deleteStockMoveRow',
+  'deleteCashEntryRow',
+  'deleteLocalSale',
   'seedDemo',
   'resetAll',
 ])

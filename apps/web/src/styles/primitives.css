@@ -392,6 +392,14 @@ select.input {
   background: var(--color-danger);
 }
 
+.sync-dot--synced .sync-dot__dot {
+  background: var(--color-success);
+}
+
+.sync-dot--local .sync-dot__dot {
+  background: var(--color-text-muted);
+}
+
 /* ---------- Card list rows ---------- */
 
 .card-list {
