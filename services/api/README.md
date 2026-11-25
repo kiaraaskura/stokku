@@ -57,6 +57,21 @@ Auth: `Authorization: Bearer <access_jwt>`.
 - `GET/POST /sales`, `GET /sales/{id}`, `POST /sales/{id}/void`
 - `GET /reports/laba-rugi?from=&to=&compare=`,
   `GET /reports/laba-rugi/drill?line=revenue|hpp|opex`
+- Sprint 2: `POST /opname`, `GET /opname/{id}`, `PATCH /opname/{id}/lines`,
+  `POST /opname/{id}/post` (atomic: one adjust move per non-zero variance,
+  all or nothing); `GET/PUT /outlets/{id}/qris` (EMVCo TLV + CRC via DB's
+  qris_crc16, owner-only writes); `POST /sales/{id}/qris/confirm`
+  (idempotent per sale, 409 on second);
+  `GET /reports/stock`, `GET /reports/sales?group_by=day|item|category`,
+  `GET /reports/dashboard` — reading DB's 0013 views (security_invoker)
+- Sync (docs/SYNC_INCREMENT.md): `POST /v1/sync/push` (max 50 ops, one tx
+  per batch, per-op savepoints — rejected ops don't abort it; exactly-once
+  via op_log.op_id; ops: stock_move.create, sale.create, cash_entry.create,
+  item.create, item.update, opname.post) and `GET /v1/sync/pull?cursor=&limit=`
+  (change_log feed, server_seq cursor, item soft deletes as tombstones).
+  Every op applies through the SAME core functions as the REST handlers.
+- `POST /items` and `PATCH /items/{id}` now accept `op_id` (dedupe via
+  op_log), like sales, stock moves and cash entries.
 - `GET /health` (public: build hash + DB status)
 
 Money is integer rupiah; qty is serialized as a JSON number (parsed from
@@ -64,6 +79,9 @@ number or decimal string, max 3 dp); IDs are UUIDv7; every write runs in a
 transaction with `set_app_context(tenant, user)` so RLS scopes every query.
 
 ## Notes / known gaps (see channel report)
+
+- `v_dashboard` and the sales-report sums return NUMERIC where counts are
+  summed; the endpoints cast to bigint and round money to integer rupiah.
 
 - `sale` has no `note` column in docs/DATA_MODEL.md or the DB schema, but
   the API contract's sale body carries one — not stored, reported as a

@@ -206,6 +206,29 @@ pub async fn create(
     Json(body): Json<StockMoveReq>,
 ) -> ApiResult<Json<Value>> {
     ctx.require(Cap::StockWrite)?;
+    let mut tx = begin_tx(&st.pool, &ctx).await?;
+    if let Some(op_id) = body.op_id {
+        if let Some(dup) = check_op_duplicate(&mut tx, op_id).await? {
+            return Ok(Json(dup));
+        }
+    }
+    let v = apply_stock_move(&mut tx, &ctx, &body).await?;
+    if let Some(op_id) = body.op_id {
+        let row_id: Uuid = serde_json::from_value(v["id"].clone()).unwrap_or(op_id);
+        record_op_log(&mut tx, Some(op_id), "stock_move.create", row_id).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(v))
+}
+
+/// The single stock-move posting path, shared by the REST handler and
+/// sync push (one ledger, one engine — never a fork).
+pub async fn apply_stock_move(
+    tx: &mut PgConnection,
+    ctx: &AuthCtx,
+    body: &StockMoveReq,
+) -> ApiResult<Value> {
+    ctx.require(Cap::StockWrite)?;
     let kind: &'static str = match body.r#type.as_str() {
         "in" => "in",
         "loss" => "loss",
@@ -232,21 +255,13 @@ pub async fn create(
         None => today_jakarta(),
     };
 
-    let mut tx = begin_tx(&st.pool, &ctx).await?;
-
-    if let Some(op_id) = body.op_id {
-        if let Some(dup) = check_op_duplicate(&mut tx, op_id).await? {
-            return Ok(Json(dup));
-        }
-    }
-
     let outlet_id = match body.outlet_id {
         Some(o) => o,
-        None => crate::util::default_outlet_id(&mut tx).await?,
+        None => crate::util::default_outlet_id(&mut *tx).await?,
     };
 
-    let old_avg = item_cost_avg(&mut tx, body.item_id).await?;
-    let old_qty = total_qty(&mut tx, body.item_id).await;
+    let old_avg = item_cost_avg(&mut *tx, body.item_id).await?;
+    let old_qty = total_qty(&mut *tx, body.item_id).await;
 
     // Direction by type: purchases and customer returns add stock,
     // loss/adjustment reduce it (opname covers both signs later).
@@ -263,7 +278,7 @@ pub async fn create(
     };
     let recorded_cost = if kind == "in" { unit_cost } else { old_avg };
 
-    let note = match body.supplier {
+    let note = match &body.supplier {
         Some(s) if !s.trim().is_empty() => match &body.note {
             Some(n) => Some(format!("pemasok: {s}; {n}")),
             None => Some(format!("pemasok: {s}")),
@@ -272,7 +287,7 @@ pub async fn create(
     };
 
     let move_id = post_move(
-        &mut tx,
+        &mut *tx,
         ctx.user_id,
         &PostMove {
             item_id: body.item_id,
@@ -290,15 +305,11 @@ pub async fn create(
     )
     .await?;
 
-    record_op_log(&mut tx, body.op_id, "stock_move.create", move_id).await?;
-
     let row = sqlx::query("select * from stock_move where id = $1")
         .bind(move_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(tx)
         .await?;
-    tx.commit().await?;
-
-    Ok(Json(move_row_json(&row, ctx.can_read_cost())?))
+    move_row_json(&row, ctx.can_read_cost())
 }
 
 async fn check_op_duplicate(tx: &mut PgConnection, op_id: Uuid) -> ApiResult<Option<Value>> {

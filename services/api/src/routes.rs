@@ -1,8 +1,11 @@
 pub mod cash;
 pub mod categories;
 pub mod items;
+pub mod opname;
+pub mod qris;
 pub mod reports;
 pub mod sales;
+pub mod sync;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -65,6 +68,23 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sales", get(sales::list).post(sales::create))
         .route("/v1/sales/{id}", get(sales::get_one))
         .route("/v1/sales/{id}/void", post(sales::void))
+        .route("/v1/sales/{id}/qris/confirm", post(qris::confirm))
+        .route(
+            "/v1/outlets/{id}/qris",
+            get(qris::get_settings).put(qris::put_settings),
+        )
+        .route("/v1/sync/push", post(sync::push))
+        .route("/v1/sync/pull", get(sync::pull))
+        .route("/v1/opname", post(opname::create))
+        .route("/v1/opname/{id}", get(opname::get_one))
+        .route(
+            "/v1/opname/{id}/lines",
+            axum::routing::patch(opname::patch_lines),
+        )
+        .route("/v1/opname/{id}/post", post(opname::post))
+        .route("/v1/reports/stock", get(reports::stock_report))
+        .route("/v1/reports/sales", get(reports::sales_report))
+        .route("/v1/reports/dashboard", get(reports::dashboard))
         .route("/v1/reports/laba-rugi", get(reports::laba_rugi))
         .route("/v1/reports/laba-rugi/drill", get(reports::drill))
         .with_state(state)

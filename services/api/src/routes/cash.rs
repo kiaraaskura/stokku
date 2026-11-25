@@ -2,7 +2,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::Row;
+use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 use axum::extract::{Path, Query, State};
@@ -52,6 +52,53 @@ pub async fn create(
     Json(body): Json<CashEntryReq>,
 ) -> ApiResult<Json<Value>> {
     ctx.require(Cap::CashWrite)?;
+    let mut tx = begin_tx(&st.pool, &ctx).await?;
+    if let Some(op_id) = body.op_id {
+        if let Some(dup) = check_op_dup(&mut tx, op_id).await? {
+            return Ok(Json(dup));
+        }
+    }
+    let v = apply_cash_entry(&mut tx, &ctx, &body).await?;
+    if let Some(op_id) = body.op_id {
+        let row_id: Uuid = serde_json::from_value(v["id"].clone()).unwrap_or(op_id);
+        record_op(&mut tx, op_id, "cash_entry.create", row_id).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(v))
+}
+
+async fn check_op_dup(tx: &mut PgConnection, op_id: Uuid) -> ApiResult<Option<Value>> {
+    let existing: Option<Value> = sqlx::query_scalar("select result from op_log where op_id = $1")
+        .bind(op_id)
+        .fetch_optional(tx)
+        .await?;
+    Ok(existing.map(|r| json!({ "duplicate": true, "op_id": op_id, "result": r })))
+}
+
+async fn record_op(
+    tx: &mut PgConnection,
+    op_id: Uuid,
+    endpoint: &str,
+    row_id: Uuid,
+) -> ApiResult<()> {
+    sqlx::query(
+        "insert into op_log (op_id, tenant_id, result)
+         values ($1, current_setting('app.tenant_id')::uuid, $2)",
+    )
+    .bind(op_id)
+    .bind(json!({ "status": "applied", "endpoint": endpoint, "row_id": row_id }))
+    .execute(tx)
+    .await?;
+    Ok(())
+}
+
+/// The single cash-entry path, shared by REST and sync push.
+pub async fn apply_cash_entry(
+    tx: &mut PgConnection,
+    ctx: &AuthCtx,
+    body: &CashEntryReq,
+) -> ApiResult<Value> {
+    ctx.require(Cap::CashWrite)?;
     if body.direction != "in" && body.direction != "out" {
         return Err(ApiError::validation_field(
             "Arah harus in atau out",
@@ -78,21 +125,9 @@ pub async fn create(
         None => today_jakarta(),
     };
 
-    let mut tx = begin_tx(&st.pool, &ctx).await?;
-    if let Some(op_id) = body.op_id {
-        let dup: Option<Value> = sqlx::query_scalar("select result from op_log where op_id = $1")
-            .bind(op_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if let Some(r) = dup {
-            return Ok(Json(
-                json!({ "duplicate": true, "op_id": op_id, "result": r }),
-            ));
-        }
-    }
     let outlet_id = match body.outlet_id {
         Some(o) => o,
-        None => crate::util::default_outlet_id(&mut tx).await?,
+        None => crate::util::default_outlet_id(&mut *tx).await?,
     };
 
     let id = now_v7();
@@ -118,23 +153,11 @@ pub async fn create(
     .execute(&mut *tx)
     .await?;
 
-    if let Some(op_id) = body.op_id {
-        sqlx::query(
-            "insert into op_log (op_id, tenant_id, result)
-             values ($1, current_setting('app.tenant_id')::uuid, $2)",
-        )
-        .bind(op_id)
-        .bind(json!({ "status": "applied", "endpoint": "cash_entry.create", "row_id": id }))
-        .execute(&mut *tx)
-        .await?;
-    }
-
     let row = sqlx::query("select * from cash_entry where id = $1")
         .bind(id)
-        .fetch_one(&mut *tx)
+        .fetch_one(tx)
         .await?;
-    tx.commit().await?;
-    Ok(Json(entry_row_json(&row)?))
+    entry_row_json(&row)
 }
 
 #[derive(Deserialize)]
