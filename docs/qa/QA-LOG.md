@@ -550,3 +550,32 @@ Same void makes both devices show `opex Rp72.000, net −Rp72.000` where it must
 server's `v_opex` counts the `sale_void` reversal as an operating expense. The client faithfully
 renders the server's wrong number. DB has the fix assigned; the harness assertion
 `voiding does not create opex` is the failing line and stays until it passes.
+
+## Run 11 — 2026-11-25, sale detail sheet merged (998d23b)
+
+Reviewed `998d23b` before merging: it touches only `apps/web/src/db/repo.ts`,
+`features/sales/SalesList.tsx`, `i18n/messages.ts`. The repo change is one read-only query
+(`getSaleLinesLocal`, `SELECT ... FROM sale_line WHERE sale_id = ?`) registered in `repoMethods`
+— no write path, no change to the embedded-lines applier. tsc clean, 64/64 tests,
+build 150.56 KB gz, merge-tree clean.
+
+main = `c50e82a`. Both gates re-run against a binary built from main, fresh DB `stokku_c4`
+(migrated 1..14), API on :8091:
+
+| Gate | Target | Result |
+|---|---|---|
+| `docs/qa/two-device.sh` | `http://127.0.0.1:8091/v1` | **24 pass, 0 fail** |
+| `docs/qa/acceptance-spine.sh` | `http://127.0.0.1:8091/v1` | **63 pass, 1 fail** (F-15 only) |
+
+### Where the queue stands
+
+| Branch | Tip | Ahead of main |
+|---|---|---|
+| db | b4f4d3e | 0 — merged |
+| backend | a6f4d33 | 0 — merged |
+| frontend | 998d23b | 0 — merged (this run) |
+| docs-ratify | 548b23b | 0 — merged |
+
+Nothing is left in the merge queue from this round. `services/api/migrations` still ends at
+`0014_opname.sql`: **DB has not yet shipped the F-15 view fix**, so the one failing assertion
+above is unchanged and expected.
