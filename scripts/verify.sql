@@ -235,11 +235,7 @@ from (select uuidv7() u) s;
 
 \echo '=== auth functions (pre-login reads under forced RLS, migration 0010) ==='
 begin;
-select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
-select (select count(*) from auth_find_user('owner@demo.test')) as owner_found,
-       (select count(*) from auth_find_user('nobody@demo.test')) as unknown_email_rows,
-       (select count(*) from auth_lookup_refresh('bogus-not-a-real-hash')) as bogus_hash_rows,
-       (select left(password_hash, 9) from auth_find_user('owner@demo.test')) as hash_prefix;
+-- FIRST, with no app context at all: plain reads must return 0 rows
 select case
   when current_setting('is_superuser') = 'on'
     then 'SKIPPED: running as superuser, which bypasses RLS (run as the app role for this check)'
@@ -248,6 +244,11 @@ select case
     then 'OK: plain user_app/refresh_token reads with no app context return 0 rows (policies not widened)'
   else 'FAIL: functions or policies widened access'
 end as no_widening;
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+select (select count(*) from auth_find_user('owner@demo.test')) as owner_found,
+       (select count(*) from auth_find_user('nobody@demo.test')) as unknown_email_rows,
+       (select count(*) from auth_lookup_refresh('bogus-not-a-real-hash')) as bogus_hash_rows,
+       (select left(password_hash, 9) from auth_find_user('owner@demo.test')) as hash_prefix;
 create temp table auth_cl_before as select count(*) c from change_log;
 insert into refresh_token (id, user_id, tenant_id, token_hash, expires_at) values
   ('01900000-0000-7000-8000-00DEAD000003', '01900000-0000-7000-8000-000000010001',
@@ -259,6 +260,180 @@ select (select count(*) from change_log) - (select c from auth_cl_before) as new
 select p.proname, p.prosecdef as security_definer, pg_get_userbyid(p.proowner) as owner,
        coalesce(array_to_string(p.proacl, ','), 'DEFAULT-PUBLIC') as acl
 from pg_proc p where p.proname in ('auth_find_user','auth_lookup_refresh','auth_revoke_tokens') order by 1;
+rollback;
+
+\echo '=== T-403 stock report: values reconcile, dead stock sane and business_date-based ==='
+begin;
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+select (select count(*) from v_stock_report) as stock_rows,
+       (select sum(value_at_cost) from v_stock_report) as at_cost_total,
+       (select sum(sl.qty * i.cost_avg) from stock_level sl join item i on i.id = sl.item_id) as at_cost_independent;
+select case when (select count(*) from v_stock_report)
+                  = (select count(*) from stock_level)
+            then 'OK: one row per stock_level row' else 'FAIL: row mismatch' end as rows_ok;
+select case when (select sum(value_at_cost) from v_stock_report)
+                  = (select sum(sl.qty * i.cost_avg) from stock_level sl join item i on i.id = sl.item_id)
+            then 'OK: value_at_cost == sum(qty * cost_avg) (ledger value)'
+            else 'FAIL: at-cost value does not reconcile' end as at_cost_ok;
+-- dead stock: sane set (not all, not none) and derived from business_date
+select count(*) filter (where dead_stock) as dead_count,
+       count(*) as total_items,
+       count(*) filter (where dead_stock) between 1 and count(*) - 1 as dead_sane
+from v_stock_report;
+select count(*) as dead_definition_matches from v_stock_report sr
+where sr.dead_stock = (
+  select coalesce(max(m.business_date) < current_date - 60, true)
+  from stock_move m
+  where m.outlet_id = sr.outlet_id and m.item_id = sr.item_id
+);
+select item_name, qty, last_movement_date, (current_date - last_movement_date) as days_idle,
+       move_count, move_count_90d
+from v_stock_report where dead_stock order by days_idle desc limit 5;
+rollback;
+
+\echo '=== T-404 sales report: by-day = total, by-item + daily_total = total, category = item ==='
+begin;
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+select (select sum(revenue) from v_sales_report where dimension = 'day') as by_day_revenue,
+       (select sum(revenue) from v_sales_report where dimension = 'item') as by_item_revenue,
+       (select sum(revenue) from v_sales_report where dimension = 'category') as by_category_revenue,
+       (select sum(total) from sale where voided_at is null) as nonvoided_sales_total,
+       (select sum(total) from sale where mode = 'daily_total' and voided_at is null) as daily_total_revenue;
+select case
+  when (select sum(revenue) from v_sales_report where dimension = 'day')
+       = (select sum(total) from sale where voided_at is null)
+    then 'OK: by-day revenue == sum of non-voided sale totals (voided contributes 0)'
+    else 'FAIL: by-day does not equal sales total' end as by_day_ok;
+select case
+  when (select sum(revenue) from v_sales_report where dimension = 'item')
+       + (select sum(total) from sale where mode = 'daily_total' and voided_at is null)
+       = (select sum(total) from sale where voided_at is null)
+    then 'OK: by-item + daily_total == total revenue exactly'
+    else 'FAIL: by-item + daily_total does not reconcile' end as item_plus_daily_ok;
+select case
+  when (select sum(revenue) from v_sales_report where dimension = 'category')
+       = (select sum(revenue) from v_sales_report where dimension = 'item')
+    then 'OK: by-category == by-item revenue'
+    else 'FAIL: category/item mismatch' end as category_ok;
+select case
+  when (select sum(revenue) from v_sales_report where dimension = 'day')
+       = (select sum(revenue) from v_revenue)
+    then 'OK: by-day also matches v_revenue (existing view)'
+    else 'FAIL: by-day vs v_revenue mismatch' end as day_vs_v_revenue_ok;
+select day, revenue, sale_count, daily_total_count from v_sales_report
+where dimension = 'day' order by day desc limit 4;
+rollback;
+
+\echo '=== T-405 dashboard: cash position, low stock, month profit reuses v_laba_rugi ==='
+begin;
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+select * from v_dashboard;
+select case
+  when (select cash_position from v_dashboard)
+       = (select sum(amount) filter (where direction = 'in')
+                - sum(amount) filter (where direction = 'out')
+          from cash_entry)
+    then 'OK: cash_position == in - out over the cash book'
+    else 'FAIL: cash position mismatch' end as cash_ok;
+select case
+  when (select low_stock_count from v_dashboard)
+       = (select count(*) from v_stock_report where low_stock)
+    then 'OK: low_stock_count matches the stock report'
+    else 'FAIL: low stock mismatch' end as low_stock_ok;
+select case
+  when (select month_profit from v_dashboard)
+       = coalesce((select net_profit from v_laba_rugi
+                   where period = date_trunc('month', current_date)::date), 0)
+    then 'OK: month_profit is v_laba_rugi net_profit for the current month'
+    else 'FAIL: month profit not from v_laba_rugi' end as month_profit_ok;
+rollback;
+
+\echo '=== T-403..T-405 cross-tenant: second tenant reads 0 rows from the new views ==='
+begin;
+select set_config('app.tenant_id', '01900000-0000-7000-8000-00AAAA000001', true);
+insert into tenant (id, name) values ('01900000-0000-7000-8000-00AAAA000001', 'Warung Lain');
+insert into outlet (id, tenant_id, name) values
+  ('01900000-0000-7000-8000-00AAAA000002', '01900000-0000-7000-8000-00AAAA000001', 'Cabang Lain');
+insert into item (id, tenant_id, name, base_unit, sale_price, cost_avg) values
+  ('01900000-0000-7000-8000-00AAAA000003', '01900000-0000-7000-8000-00AAAA000001', 'Item Lain', 'pcs', 500, 300);
+select (select count(*) from v_stock_report) as t2_stock_rows,
+       (select count(*) from v_sales_report) as t2_sales_rows,
+       (select count(*) from v_dashboard) as t2_dashboard_rows,
+       (select count(*) from v_dashboard where tenant_id = '01900000-0000-7000-8000-000000000001') as t2_rows_from_tenant1,
+       (select today_sales + cash_position + low_stock_count + month_profit from v_dashboard) as t2_measures;
+select case
+  when (select count(*) from v_stock_report) = 0
+       and (select count(*) from v_sales_report) = 0
+       -- the dashboard is one row per tenant+outlet: tenant 2 sees exactly
+       -- its OWN row, not tenant 1's, and every measure must be 0
+       and (select count(*) from v_dashboard) = 1
+       and (select count(*) from v_dashboard where tenant_id = '01900000-0000-7000-8000-000000000001') = 0
+       and (select today_sales + cash_position + low_stock_count + month_profit from v_dashboard) = 0
+    then 'OK: tenant 2 sees only its own empty dashboard row; stock/sales views return 0 rows'
+    else 'FAIL: new views leaked tenant 1 data' end as new_views_isolation;
+rollback;
+
+\echo '=== all report views are security_invoker (the 0011 rule) ==='
+select v.viewname, (c.reloptions @> '{security_invoker=true}') as security_invoker
+from pg_views v
+join pg_class c on c.relname = v.viewname
+join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+where v.schemaname = 'public'
+order by v.viewname;
+
+\echo '=== sync substrate: change_log coverage, tombstone rule, op_log exactly-once ==='
+begin;
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+select case when count(*) = 0
+            then 'OK: every business tenant table has the change_log trigger (18/18; log/security tables excluded by design)'
+            else 'FAIL: tenant tables without change_log: ' || string_agg(relname, ', ') end as change_log_coverage
+from (
+  select c.relname
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relkind = 'r'
+    and c.relname in (select table_name from information_schema.columns
+                      where table_schema = 'public' and column_name = 'tenant_id')
+    and c.relname not in ('op_log','change_log','audit_log','refresh_token')
+    and not exists (select 1 from pg_trigger t
+                    where t.tgrelid = c.oid and t.tgname = 'change_log' and not t.tgisinternal)
+) missing;
+insert into item (id, tenant_id, name, base_unit, sale_price, cost_avg)
+values ('01900000-0000-7000-8000-00DEAD000102', '01900000-0000-7000-8000-000000000001',
+        'verify tombstone', 'pcs', 1000, 500);
+update item set deleted_at = now()
+where id = '01900000-0000-7000-8000-00DEAD000102';
+select case when (to_jsonb(i) ->> 'deleted_at') is not null
+            then 'OK: tombstone derived from the row payload (deleted_at in the JSON), no extra column, no second query'
+            else 'FAIL: tombstone not derivable from the row' end as tombstone_rule
+from item i where i.id = '01900000-0000-7000-8000-00DEAD000102';
+rollback;
+begin;
+-- op_log: the PK is the exactly-once guard; cross-tenant probes see nothing
+select set_config('app.tenant_id', '01900000-0000-7000-8000-00AAAA000001', true);
+insert into tenant (id, name) values ('01900000-0000-7000-8000-00AAAA000001', 'Warung Lain');
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+insert into op_log (op_id, tenant_id, result)
+values ('01900000-0000-7000-8000-00DEAD000202', '01900000-0000-7000-8000-000000000001', '{"status":"applied"}');
+select set_config('app.tenant_id', '01900000-0000-7000-8000-00AAAA000001', true);
+select case when count(*) = 0
+            then 'OK: cross-tenant op_id probe returns 0 rows'
+            else 'FAIL: op_log leaked across tenants' end as cross_tenant_op_probe
+from op_log where op_id = '01900000-0000-7000-8000-00DEAD000202';
+do $$
+begin
+  begin
+    insert into op_log (op_id, tenant_id) values
+      ('01900000-0000-7000-8000-00DEAD000202', '01900000-0000-7000-8000-00AAAA000001');
+    raise notice 'FAIL: cross-tenant op_id re-insert was allowed';
+  exception when unique_violation then
+    raise notice 'OK: op_log primary key (not an app check) rejects a duplicate op_id — exactly-once is the constraint';
+  end;
+end $$;
+select (to_regclass('public.change_log_tenant_seq_idx') is not null) as change_log_cursor_idx,
+       (to_regclass('public.op_log_pkey') is not null) as op_log_pk,
+       (to_regclass('public.stock_move_tenant_seq_idx') is not null) as stock_move_seq_idx,
+       (to_regclass('public.item_name_trgm') is not null) as item_trgm_idx;
 rollback;
 
 \echo '=== done ==='
