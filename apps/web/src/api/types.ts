@@ -204,3 +204,86 @@ export class NetworkError extends Error {
     super(msg)
   }
 }
+
+/** ---------- Sprint 2 wire shapes (QRIS, reports, opname) ---------- */
+
+export interface ApiQrisSettings {
+  outlet_id: string
+  mode: 'none' | 'static_image' | 'static_payload'
+  image_url: string | null
+  payload: string | null
+  mdr_pct: number
+}
+
+export interface ApiQrisConfirm {
+  payment: {
+    id: string
+    sale_id: string
+    method: string
+    amount_gross: number
+    mdr_amount: number
+    amount_net: number
+    status: string
+    paid_at?: string
+  }
+}
+
+export interface ApiStockReportItem {
+  item_id?: string
+  name?: string
+  qty?: number
+  min_stock?: number
+  cost_avg?: number
+  sale_price?: number
+  value_at_cost?: number
+  value_at_sale?: number
+  last_movement_date?: string
+  [k: string]: unknown
+}
+
+export interface ApiStockReport {
+  at_cost: number
+  at_sale: number
+  low_stock: ApiStockReportItem[]
+  dead_stock: ApiStockReportItem[]
+  [k: string]: unknown
+}
+
+export interface ApiSalesReportRow {
+  day?: string
+  business_date?: string
+  item_id?: string
+  item_name?: string
+  category_id?: string
+  category_name?: string
+  revenue: number
+  sale_count?: number
+  line_count?: number
+  daily_total_count?: number
+  [k: string]: unknown
+}
+
+export interface ApiDashboard {
+  today_sales: number
+  cash_position: number
+  low_stock_count: number
+  month_profit: number
+  [k: string]: unknown
+}
+
+export interface ApiOpnameLine {
+  item_id: string
+  system_qty: number
+  counted_qty: number | null
+  [k: string]: unknown
+}
+
+export interface ApiOpnameSession {
+  id: string
+  outlet_id: string
+  status: 'open' | 'posted' | 'cancelled'
+  category_id?: string | null
+  business_date: string
+  lines: ApiOpnameLine[]
+  [k: string]: unknown
+}

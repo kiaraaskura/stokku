@@ -67,6 +67,9 @@ export function ItemList() {
         <h1 className="screen__title">{t('items.title')}</h1>
         <div className="screen__actions">
           {totalCount > 0 && <span className="muted">{t('items.count', { n: totalCount })}</span>}
+          <Link to="/opname" className="btn btn--secondary btn--sm">
+            📋 {t('opname.title')}
+          </Link>
           <Link to="/barang/baru" className="btn btn--primary">
             + {t('items.add')}
           </Link>
