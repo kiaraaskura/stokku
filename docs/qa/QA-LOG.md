@@ -244,3 +244,27 @@ Plus `negative_stock` present and correct: an item sold to `stock -1` returns
 - The debug binary had to be rebuilt before the run; a stale `target/debug` binary makes any
   harness result meaningless.
 - Still out of scope: sections C (sync), D (QRIS), B11 (opname) and the web app's API wiring.
+
+---
+
+## PRDTASK — harness wrong-target trap (2026-11-25)
+
+I ran `acceptance-spine.sh` exactly as written and got **pass=24 fail=36**, then ran it with
+`API_BASE=http://127.0.0.1:8099/v1` and got **pass=60 fail=0**. Same code, same API.
+
+Cause: the script defaulted to `:8080`, which on this machine is an unrelated local app
+(`catat-usaha`). That app answers `200` to `/health` — and also to `/reports/stock` — so the
+read-endpoint sweep in section 16 went green against the wrong service while every spine
+assertion failed. A wrong-target run can therefore look *nearly* green, and the only signal was
+a result nobody would read twice.
+
+Fix (this branch):
+- default `BASE` is now `:8099` (the port this project actually uses on this machine)
+- an identity guard after the health check: `/health` must contain `db.status`. Stokku's health
+  payload has it; the other app's does not. On mismatch the script prints FAIL and **exits 90**
+  rather than reporting a pass count.
+
+Proof: wrong target → `FAIL target is NOT the Stokku API` then `exit=90`. Correct target →
+`pass=61 fail=0`, `exit=0`.
+
+Rule for the team: never quote a harness pass count without the target. The guard enforces it now.
