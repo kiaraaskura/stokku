@@ -335,3 +335,28 @@ genuinely server-backed, not locally computed.
 - Staff can post an item cost through the API even though the UI hides it.
 - Docker absent: `make up`, image builds and compose never run. Repo not on GitHub: CI inactive.
 - Browser offline/queued-retry flow not re-run by me this pass (Frontend demonstrated it).
+
+---
+
+## PRDTASK — Sprint 2 verified independently (2026-11-25)
+
+Ran the new endpoints myself against :8099 (Backend's branch build), fresh tenants, not from reports:
+
+| Check | Result |
+|---|---|
+| B11 opname: 2 items, count Kopi 9 of system 10 | posted 1 adjustment (−1), stock 9, re-post **409** |
+| B11 opname with no items in scope | 422, readable Indonesian |
+| D19 QRIS: valid EMVCo payload + MDR 0,7 | **200**, settings returned |
+| D19 QRIS: malformed payload | 422 `Payload QRIS tidak valid…`, server-side TLV validation real |
+| D20 QRIS confirm 60.000 @ 0,7% | gross 60.000 / mdr **420** / net **59.580**, status paid |
+| D20 second confirm | **409** `sudah dikonfirmasi` |
+| T-404 by-day total vs laba rugi (Oct) | **981.000 = 981.000** |
+| T-404 by-item + daily_total | 731.000 + 250.000 = **981.000** exact; category == item |
+| T-405 dashboard | cash −2.358.000, low_stock 4 (matches DB's proof) |
+| `qris_mdr_fee` in laba rugi | present, 420, reported separately from gross revenue |
+
+Ratified in docs (this branch): `qris_mdr_fee` and stock-report `data[]` added to API_CONTRACT;
+opname session/line tables added to DATA_MODEL §1 with the immutability rule.
+
+Note for the record: my first two QRIS payload attempts were rejected — that was my hand-built TLV,
+not a server fault. A correct CRC payload was accepted. The validator is doing its job.

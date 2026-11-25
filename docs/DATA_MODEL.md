@@ -52,6 +52,13 @@ contact(id, tenant_id, type check in (customer,supplier), name, phone)
 payable(id, tenant_id, contact_id, amount, due_date, paid_amount)
 receivable(id, tenant_id, contact_id, sale_id, amount, due_date, paid_amount)
 
+opname_session(id, tenant_id, outlet_id, status check in (open,posted,cancelled),
+               category_id, business_date, posted_at, posted_by, created_by, created_at)
+opname_line(id, tenant_id, session_id, item_id, system_qty NUMERIC(14,3),
+            counted_qty NUMERIC(14,3), counted_at, unique(session_id, item_id))
+ -- system_qty is a trigger-enforced immutable snapshot; lines are immutable once the
+ -- session leaves 'open' (UPDATE/DELETE raise). History is never edited.
+
 op_log(op_id uuid primary key, tenant_id, device_id, applied_at, result jsonb)
 change_log(server_seq bigserial primary key, tenant_id, table_name, row_id, op, changed_at)
 audit_log(id, tenant_id, actor_id, action, entity, entity_id, before jsonb, after jsonb, device, at)

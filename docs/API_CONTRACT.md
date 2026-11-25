@@ -111,13 +111,25 @@ Credit sale (`payment_method:"credit"` or `paid:false`) stores a receivable stub
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/reports/laba-rugi?from=&to=&compare=true` | `{revenue, hpp, gross_profit, opex, net_profit, unpaid_revenue, comparison:{...}, lines:[{key,label,amount,drill?}]}` |
+| GET | `/reports/laba-rugi?from=&to=&compare=true` | `{revenue, hpp, gross_profit, opex, qris_mdr_fee, net_profit, unpaid_revenue, comparison:{...}, lines:[...]}` |
 | GET | `/reports/laba-rugi/drill?line=revenue` | contributing transactions |
-| GET | `/reports/stock?outlet_id=` | `{at_cost, at_sale, low_stock[], dead_stock[]}` |
-| GET | `/reports/sales?from=&to=&group_by=day|item|category` | |
+| GET | `/reports/stock?outlet_id=` | `{at_cost, at_sale, low_stock[], dead_stock[], data:[{item_id,item_name,qty,cost_avg,sale_price,value_at_cost,value_at_sale,low_stock,negative_stock,last_movement_date,dead_stock,move_count,move_count_90d}]}` |
+| GET | `/reports/sales?from=&to=&group_by=day\|item\|category` | `{data:[{day?,item_id?,category_id?,revenue,sale_count,daily_total_count,line_count}], …}`; `group_by=day` is the only one that includes `daily_total` sales |
 | GET | `/reports/dashboard?outlet_id=` | `{today_sales, cash_position, low_stock_count, month_profit}` |
 
 Laba rugi definition is fixed: `revenue − hpp − opex = net_profit`; stock purchases are inventory, not expense.
+`qris_mdr_fee` (approved 2026-11-25) reports the MDR withheld on QRIS separately; revenue stays **gross**, so profit is not understated by the fee. `data[]` on the stock report (approved 2026-11-25) is the per-item detail behind the four totals; totals are authoritative, `data` is the drill-down.
+
+## Opname
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/opname` | `{outlet_id, category_id?}` or `{outlet_id, item_ids?}`; snapshots `system_qty` per line; 422 on an empty scope |
+| GET | `/opname/{id}` | session + lines with `system_qty`, `counted_qty`, live `current_qty` |
+| PATCH | `/opname/{id}/lines` | `{lines:[{item_id, counted_qty}]}`; open sessions only, 409 after post |
+| POST | `/opname/{id}/post` | one `adjust` move per non-zero variance, measured against live stock, in one transaction; `{posted, adjustments:[{item_id, qty, system_qty_at_post, counted_qty, move_id}], session}`; re-post 409 |
+
+`system_qty` is an immutable snapshot (DB trigger). Posted lines are immutable forever; session history is never edited. A count of 0 is a count, not "unset".
 
 ## Sync
 
