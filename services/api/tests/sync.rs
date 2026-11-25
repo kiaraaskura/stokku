@@ -19,6 +19,7 @@ use stokku_api::config::AppConfig;
 use stokku_api::ctx::{AuthCtx, Role};
 use stokku_api::routes::items::{create as create_item, CreateItemReq};
 
+use stokku_api::routes::sales::{create as create_sale_rest, SaleLineReq, SaleReq};
 use stokku_api::routes::sync::{pull, push, PullQuery, PushOp, PushReq};
 use stokku_api::state::AppState;
 use stokku_api::stock::{create as create_move, StockMoveReq};
@@ -543,4 +544,166 @@ async fn count_rows(pool: &PgPool, ctx: &AuthCtx, sql: &str) -> i64 {
     let n: i64 = sqlx::query_scalar(sql).fetch_one(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     n
+}
+
+/// Regression for the sale_line gap (SYNC_INCREMENT.md decision 548b23b):
+/// a pulled sale row must carry its embedded lines with
+/// qty/unit_price/cost_at_sale — device B's HPP drill-down depends on it.
+/// Fails on pre-fix code (no "lines" key on the pulled sale row).
+#[tokio::test]
+async fn pulled_sale_carries_its_lines() {
+    if common::admin_url().is_none() {
+        eprintln!("SKIPPED: STOKKU_TEST_ADMIN_URL not set");
+        return;
+    }
+    let pool = common::fresh_db("sync-lines").await;
+    let (st, owner, staff, outlet) = tenant(&pool, "d").await;
+
+    // two items, one stock-in each
+    let mut items = Vec::new();
+    for (name, price, cost) in [("Kopi Hitam", 5000, 3000), ("Teh Celup", 4000, 2000)] {
+        let Json(item) = create_item(
+            State(st.clone()),
+            owner.clone(),
+            Json(CreateItemReq {
+                name: name.into(),
+                sku: None,
+                barcodes: None,
+                category_id: None,
+                base_unit: "pcs".into(),
+                units: None,
+                sale_price: price,
+                cost: Some(cost),
+                min_stock: None,
+                active: None,
+                op_id: None,
+            }),
+        )
+        .await
+        .expect("item");
+        let id: Uuid = serde_json::from_value(item["id"].clone()).unwrap();
+        items.push((id, price, cost));
+        let Json(_mv) = create_move(
+            State(st.clone()),
+            owner.clone(),
+            Json(StockMoveReq {
+                item_id: id,
+                outlet_id: None,
+                r#type: "in".into(),
+                qty_positive: Decimal::new(10_000, 3),
+                unit_cost: Some(cost),
+                business_date: None,
+                supplier: None,
+                note: None,
+                op_id: None,
+            }),
+        )
+        .await
+        .expect("stock in");
+    }
+
+    // a 2-line sale (total 2*5000 + 3*4000 = 22000)
+    let sale_req = SaleReq {
+        outlet_id: Some(outlet),
+        business_date: Some("2026-11-25".into()),
+        customer_id: None,
+        discount: None,
+        payment_method: "cash".into(),
+        paid: Some(true),
+        note: None,
+        lines: vec![
+            SaleLineReq {
+                item_id: items[0].0,
+                qty: Decimal::new(2_000, 3),
+                unit_price: 5000,
+                discount: None,
+            },
+            SaleLineReq {
+                item_id: items[1].0,
+                qty: Decimal::new(3_000, 3),
+                unit_price: 4000,
+                discount: None,
+            },
+        ],
+        op_id: None,
+    };
+    let Json(sale) = create_sale_rest(State(st.clone()), owner.clone(), Json(sale_req))
+        .await
+        .expect("sale");
+    let sale_id: Uuid = serde_json::from_value(sale["id"].clone()).unwrap();
+    assert_eq!(sale["total"], serde_json::json!(22000));
+
+    // pull everything and find the sale row
+    let Json(p) = pull(
+        State(st.clone()),
+        owner.clone(),
+        Query(PullQuery {
+            cursor: Some(0),
+            limit: None,
+        }),
+    )
+    .await
+    .expect("pull");
+    let sale_change = p["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["table"] == "sale" && c["row"]["id"] == serde_json::json!(sale_id))
+        .expect("sale row must pull");
+    let row = &sale_change["row"];
+
+    // THE assertion: embedded lines with all fields the client needs
+    let lines = row["lines"].as_array().expect("sale row carries lines");
+    assert_eq!(lines.len(), 2, "both lines embedded");
+    assert_eq!(row["total"], serde_json::json!(22000), "total on the row");
+    assert_eq!(
+        row["voided_at"],
+        serde_json::Value::Null,
+        "voided is a field"
+    );
+    for (line, (item_id, price, cost)) in lines.iter().zip(&items) {
+        assert_eq!(line["item_id"], serde_json::json!(item_id));
+        assert_eq!(line["unit_price"], serde_json::json!(price));
+        assert!(line["qty"].is_number() || line["qty"].is_string());
+        assert_eq!(
+            line["cost_at_sale"],
+            serde_json::json!(*cost),
+            "owner sees cost_at_sale"
+        );
+    }
+    // no sale_line table entries in the feed (lines live inside the sale)
+    assert!(
+        !p["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["table"] == "sale_line"),
+        "sale_line is not its own pull table"
+    );
+
+    // staff pulls the same sale: lines still embedded, cost stripped
+    let Json(ps) = pull(
+        State(st.clone()),
+        staff,
+        Query(PullQuery {
+            cursor: Some(0),
+            limit: None,
+        }),
+    )
+    .await
+    .expect("staff pull");
+    let staff_sale = ps["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["table"] == "sale" && c["row"]["id"] == serde_json::json!(sale_id))
+        .expect("staff pulls the sale too");
+    for line in staff_sale["row"]["lines"].as_array().unwrap() {
+        assert!(
+            line.get("cost_at_sale").is_none(),
+            "staff must not receive cost_at_sale"
+        );
+    }
+
+    common::drop_db(pool).await;
 }

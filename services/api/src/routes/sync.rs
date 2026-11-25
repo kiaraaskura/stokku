@@ -323,7 +323,7 @@ pub async fn pull(
         last_seq = seq;
 
         // fetch the row through RLS in the caller's tenant context
-        let (row, deleted) = fetch_row(&mut tx, &table, row_id).await?;
+        let (row, deleted) = fetch_row(&mut tx, &table, row_id, ctx.can_read_cost()).await?;
         changes.push(json!({
             "table": table,
             "row": row,
@@ -348,6 +348,7 @@ async fn fetch_row(
     tx: &mut sqlx::PgConnection,
     table: &str,
     row_id: Option<Uuid>,
+    include_cost: bool,
 ) -> ApiResult<(Value, bool)> {
     use sqlx::postgres::PgRow;
     let Some(id) = row_id else {
@@ -360,7 +361,23 @@ async fn fetch_row(
         "item_unit" => sqlx::query("select to_jsonb(u) as row, false as deleted from item_unit u where u.id = $1").bind(id).fetch_optional(tx).await?,
         "stock_move" => sqlx::query("select to_jsonb(m) as row, false as deleted from stock_move m where m.id = $1").bind(id).fetch_optional(tx).await?,
         "stock_level" => sqlx::query("select to_jsonb(s) as row, false as deleted from stock_level s where s.item_id = $1").bind(id).fetch_optional(tx).await?,
-        "sale" => sqlx::query("select to_jsonb(s) as row, (s.voided_at is not null) as voided, false as deleted from sale s where s.id = $1").bind(id).fetch_optional(tx).await?,
+        // a sale syncs as ONE aggregate: lines embedded, voided stays a
+        // field (SYNC_INCREMENT.md, decision 548b23b)
+        "sale" => sqlx::query(
+            "select to_jsonb(s) || jsonb_build_object('lines', coalesce(l.lines, '[]'::jsonb)) as row,
+                    false as deleted
+             from sale s
+             left join lateral (
+               select jsonb_agg(jsonb_build_object(
+                        'id', sl.id, 'item_id', sl.item_id, 'qty', sl.qty,
+                        'unit_price', sl.unit_price, 'discount', sl.discount,
+                        'cost_at_sale', sl.cost_at_sale) order by sl.id) as lines
+               from sale_line sl where sl.sale_id = s.id
+             ) l on true
+             where s.id = $1")
+            .bind(id)
+            .fetch_optional(tx)
+            .await?,
         "payment" => sqlx::query("select to_jsonb(p) as row, false as deleted from payment p where p.id = $1").bind(id).fetch_optional(tx).await?,
         "cash_entry" => sqlx::query("select to_jsonb(c) as row, false as deleted from cash_entry c where c.id = $1").bind(id).fetch_optional(tx).await?,
         "cash_category" => sqlx::query("select to_jsonb(c) as row, false as deleted from cash_category c where c.id = $1").bind(id).fetch_optional(tx).await?,
@@ -378,7 +395,32 @@ async fn fetch_row(
         // vanished rows (RLS/cleanup) still advance the cursor as a no-op
         return Ok((Value::Null, false));
     };
-    let row_v: Value = row.try_get::<sqlx::types::Json<Value>, _>("row")?.0;
+    let mut row_v: Value = row.try_get::<sqlx::types::Json<Value>, _>("row")?.0;
     let deleted: bool = row.try_get("deleted")?;
+    if !include_cost {
+        // staff may sync their own tenant's data but never cost fields
+        match table {
+            "item" => {
+                if let Some(obj) = row_v.as_object_mut() {
+                    obj.remove("cost_avg");
+                }
+            }
+            "stock_move" => {
+                if let Some(obj) = row_v.as_object_mut() {
+                    obj.remove("unit_cost");
+                }
+            }
+            "sale" => {
+                if let Some(lines) = row_v["lines"].as_array_mut() {
+                    for line in lines {
+                        if let Some(obj) = line.as_object_mut() {
+                            obj.remove("cost_at_sale");
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     Ok((row_v, deleted))
 }
