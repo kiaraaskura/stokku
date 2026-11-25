@@ -384,3 +384,70 @@ a migration to fix an artefact of per-row fetching, when a sale is always an agg
 
 Also confirmed from the same pull: `stock_level` does pull (so device B can render stock without
 replaying moves), and `voided` is carried on the sale rather than being a tombstone.
+
+## Run 8 — 2026-11-25, Sprint-2 + sync merged; section C gate built and proved
+
+Merged in PRDTASK's order, each reviewed for ownership first:
+
+| # | Branch | Commits | What |
+|---|---|---|---|
+| 1 | db | 64dcca8, 6641e6a, b4f4d3e | 0013 report views, 0014 opname tables, sync-substrate proofs |
+| 2 | backend | 797e36c, 8c3f0dd, 93d14be, 043c002, 3b1a8c8 | QRIS Tier 0, opname, report endpoints, sync push/pull, sale-line embed |
+| 3 | docs-ratify | beec0a7, b1c05f9, 548b23b | qris_mdr_fee/data[], SYNC_INCREMENT.md, sale_line decision |
+
+main = `d6513e7`. Frontend is **not** merged — see below.
+
+DB had to land first because Backend reads those views/tables, and Backend's branch carried an
+older `scripts/verify.sql` snapshot from its own db merge. Checked that DB's newer sync-substrate
+proofs survived the merge: `grep -c "sync substrate" scripts/verify.sql` → 1. No conflict.
+
+### Verified myself on merged main
+
+| Check | Result |
+|---|---|
+| fresh DB, migrate as non-superuser | 1..14, exit 0 |
+| seed | ok |
+| `scripts/verify.sh` | exit 0, 0 FAIL/ERROR |
+| `cargo build` / `clippy -D warnings` / `fmt --check` | clean |
+| `cargo test` with `STOKKU_TEST_ADMIN_URL` | **11/11** |
+| `acceptance-spine.sh` @ :8095 (main-built) | **64 pass, 0 fail** |
+| `/reports/stock`, `/reports/sales?group_by=day|item`, `/reports/dashboard` | all **200** (were 404) |
+
+Report figures cross-checked against DB's independent numbers: stock at cost 20 rows, dashboard
+`cash_position −2.358.000`, `low_stock_count 4`.
+
+### NEW: `docs/qa/two-device.sh` — the section C gate
+
+Device B sees the tenant **only** through `/sync/pull` with its own cursor — never a REST read.
+That is the property the demo depends on, and it is what makes the HPP assertion meaningful.
+
+Sharp assertions (totals matching is not enough):
+- the pulled sale row must carry an embedded `lines` array with both lines
+- device B's HPP must be non-empty **and equal** device A's — revenue with an empty HPP
+  breakdown is a FAIL
+- a voided sale must arrive with `voided_at` set and `deleted=false` (void is not a tombstone)
+- replaying the same push batch returns `duplicate` and does not double-apply
+
+**Proved to fail on pre-fix code.** Built `043c002` (before the embed) and ran the same gate:
+
+```
+FAIL  pulled sale carries an embedded lines array — expected [2] got [MISSING]
+FAIL  device B HPP breakdown is EMPTY — revenue would show with no HPP (section C blocker)
+PASS  device B sale total matches (72000)
+```
+
+Totals matched while the breakdown was empty — exactly the case that would have shipped silently.
+
+**On merged main (3b1a8c8):** **24 pass, 0 fail**, `TARGET http://127.0.0.1:8095/v1`.
+Device B pulled 28 rows, stock 15, both line ids present, HPP 43.500 = device A's
+(5 × 7.500 + 3 × 2.000), total 72.000, replay `duplicate`, stock 17 not 19, void carried
+`voided_at` with `deleted=false`.
+
+### F-14 — Frontend's sale applier does not read the embedded `lines` array (open, blocking C)
+
+Frontend's branch tip is `d95edd6` with `apps/web/src/db/repo.ts` **uncommitted**. Its
+`case 'sale'` in `applyOneChange` writes the sale row only; it handles a separate `sale_line`
+change row, which no longer exists now that lines are embedded (the same gap that just bit
+Backend, client-side). So the server fix is merged but the browser would still show revenue with
+an empty HPP drill-down on device B. Not merged for this reason. Frontend also still owes the
+two-device browser evidence; this script is the HTTP-level equivalent and is now the gate.
