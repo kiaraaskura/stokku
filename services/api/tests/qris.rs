@@ -279,11 +279,8 @@ async fn qris_settings_and_confirm_flow() {
     .expect("laba rugi");
     assert_eq!(rep["revenue"], json!(60000), "gross revenue, not net");
     assert_eq!(rep["qris_mdr_fee"], json!(420), "MDR fee separate");
-    assert_eq!(
-        rep["net_profit"],
-        json!(30000 - 0),
-        "net = 60000 - 30000 hpp - 0 opex"
-    );
+    // net = revenue 60000 - hpp 30000 - opex 0 (MDR shown separately)
+    assert_eq!(rep["net_profit"], json!(30000));
 
     common::drop_db(pool).await;
 }

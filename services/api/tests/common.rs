@@ -4,6 +4,11 @@
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use tokio::sync::Mutex;
+
+/// 0010 alters a cluster-global role, so migrations from parallel tests
+/// must not run at the same instant ("tuple concurrently updated").
+static MIGRATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub fn admin_url() -> Option<String> {
     std::env::var("STOKKU_TEST_ADMIN_URL")
@@ -41,6 +46,7 @@ fn host_port() -> String {
 /// grant the app role its privileges, and return a pool connected as the
 /// non-superuser app role.
 pub async fn fresh_db(tag: &str) -> PgPool {
+    let _guard = MIGRATE_LOCK.lock().await;
     let admin = admin_url().expect("STOKKU_TEST_ADMIN_URL");
     let admin = admin.trim_end_matches('/');
     let admin = admin.strip_suffix("/postgres").unwrap_or(admin);
@@ -51,11 +57,11 @@ pub async fn fresh_db(tag: &str) -> PgPool {
         .connect(&format!("{admin}/postgres"))
         .await
         .expect("connect admin");
-    sqlx::query(&format!("drop database if exists {dbname}"))
+    sqlx::query(&format!("drop database if exists \"{dbname}\""))
         .execute(&superpool)
         .await
         .expect("drop db");
-    sqlx::query(&format!("create database {dbname}"))
+    sqlx::query(&format!("create database \"{dbname}\""))
         .execute(&superpool)
         .await
         .expect("create db");
@@ -105,9 +111,11 @@ pub async fn drop_db(pool: PgPool) {
         .connect(&format!("{admin}/postgres"))
         .await
     {
-        let _ = sqlx::query(&format!("drop database if exists {dbname} with (force)"))
-            .execute(&p)
-            .await;
+        let _ = sqlx::query(&format!(
+            "drop database if exists \"{dbname}\" with (force)"
+        ))
+        .execute(&p)
+        .await;
         p.close().await;
     }
 }

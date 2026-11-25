@@ -61,36 +61,9 @@ pub struct CreateItemReq {
     pub units: Option<Vec<UnitReq>>,
     pub sale_price: i64,
     pub cost: Option<i64>,
-    #[serde(default, deserialize_with = "de_qty_opt")]
+    #[serde(default, deserialize_with = "crate::util::de_qty_opt")]
     pub min_stock: Option<Decimal>,
     pub active: Option<bool>,
-}
-
-fn de_qty_opt<'de, D>(d: D) -> Result<Option<Decimal>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let v = Value::deserialize(d)?;
-    match v {
-        Value::Null => Ok(None),
-        other => {
-            let s = match &other {
-                Value::Number(n) => n.to_string(),
-                Value::String(s) => s.trim().replace(',', "."),
-                _ => {
-                    return Err(serde::de::Error::custom(
-                        "qty harus angka atau string desimal",
-                    ))
-                }
-            };
-            let dec = Decimal::from_str_exact(&s)
-                .map_err(|_| serde::de::Error::custom("qty bukan angka desimal yang valid"))?;
-            if dec.scale() > 3 {
-                return Err(serde::de::Error::custom("qty maksimal 3 angka desimal"));
-            }
-            Ok(Some(dec))
-        }
-    }
 }
 
 /// POST /v1/items — owner only (item.write).
