@@ -6,6 +6,8 @@ import { Badge } from '../../components/primitives'
 import { Empty, ErrorView, Loading } from '../../components/state'
 import { formatIDR } from '../../lib/money'
 import { formatDate, currentMonth, formatMonth, monthRange, recentMonths } from '../../lib/date'
+import { Sheet } from '../../components/Sheet'
+import { formatQty } from '../../lib/money'
 import type { ApiSale } from '../../api/types'
 
 interface SaleRow {
@@ -42,6 +44,8 @@ export function SalesList(): React.ReactNode {
   const [rows, setRows] = useState<SaleRow[] | null>(null)
   const [source, setSource] = useState<'server' | 'local'>('local')
   const [error, setError] = useState<string | null>(null)
+  const [detail, setDetail] = useState<SaleRow | null>(null)
+  const [detailLines, setDetailLines] = useState<{ name: string; qty: string; price: number; cost: number | null }[] | null>(null)
 
   useEffect(() => {
     if (!repo) return
@@ -87,6 +91,27 @@ export function SalesList(): React.ReactNode {
 
   const months = recentMonths(12)
 
+  const openDetail = async (sale: SaleRow) => {
+    setDetail(sale)
+    setDetailLines(null)
+    if (!repo) return
+    try {
+      const local = await repo.call('getSaleLinesLocal', sale.id)
+      const items = await repo.call('listItems', '', false)
+      const nameById = new Map(items.map((i: { id: string; name: string }) => [i.id, i.name]))
+      setDetailLines(
+        local.map((l) => ({
+          name: nameById.get(l.itemId) ?? l.itemId.slice(0, 8),
+          qty: formatQty(l.qtyM),
+          price: l.unitPrice,
+          cost: can('cost.read') ? l.costAtSale : null,
+        })),
+      )
+    } catch {
+      setDetailLines([])
+    }
+  }
+
   return (
     <div className="screen">
       <div className="screen__header">
@@ -115,7 +140,15 @@ export function SalesList(): React.ReactNode {
           ) : (
             <div className="card-list">
               {rows.map((r) => (
-                <div key={r.id} className="card-row" style={{ cursor: 'default' }}>
+                <div
+                  key={r.id}
+                  className="card-row"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => void openDetail(r)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void openDetail(r) }}
+                  tabIndex={0}
+                  role="button"
+                >
                   <div className="card-row__main">
                     <span className="card-row__title">
                       {r.number}
@@ -144,6 +177,36 @@ export function SalesList(): React.ReactNode {
           {source === 'server' ? 'HTTP GET /v1/sales' : t('common.cachedData')}
         </p>
       )}
+
+      <Sheet open={detail !== null} title={detail ? `${t('sell.number', { n: detail.number })} · ${formatIDR(detail.total)}` : ''} onClose={() => setDetail(null)}>
+        {detail && (
+          <>
+            <p className="muted" style={{ margin: 0 }}>
+              {formatDate(detail.businessDate, locale)} · {t(`sell.payment.${detail.paymentMethod}` as 'sell.payment.cash')}
+              {detail.voided ? ` · ${t('sales.voided')}` : !detail.paid ? ` · ${t('sell.unpaid')}` : ''}
+            </p>
+            {detailLines === null && <Loading />}
+            {detailLines !== null && detailLines.length === 0 && <Empty icon="🧾">{t('sales.noLines')}</Empty>}
+            {detailLines !== null && detailLines.length > 0 && (
+              <div className="card-list">
+                {detailLines.map((l, i) => (
+                  <div key={i} className="card-row" style={{ cursor: 'default' }}>
+                    <div className="card-row__main">
+                      <span className="card-row__title">{l.name}</span>
+                      <span className="card-row__sub">{l.qty} × {formatIDR(l.price)}</span>
+                    </div>
+                    {l.cost !== null && (
+                      <div className="card-row__end">
+                        <span className="muted num">@{formatIDR(l.cost)}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </Sheet>
     </div>
   )
 }
