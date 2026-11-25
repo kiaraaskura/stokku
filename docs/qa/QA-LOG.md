@@ -507,3 +507,46 @@ void, and revenue−hpp−opex must equal net. On the current build that asserti
 Fix belongs to DB (their view): exclude `ref_type = 'sale_void'` (and ideally also `ref_type =
 'sale'`, so a paid sale's cash_in can never be double-classified) from `v_opex`, in a new
 migration — do not edit 0009, it is checksummed on main.
+
+## Run 10 — 2026-11-25, section C browser evidence re-run on merged main
+
+Frontend was already merged in run 9 (`b4709f9`), including all seven commits
+`c999b40, 9b6c278, 6a9fdd5, d95edd6, 3dbacd7, cc2e6c1, 4cf6a0f`. Verified each is an ancestor
+of main rather than re-merging. main = `d120d8d`.
+
+Re-ran both gates against a binary built from `main` (`git archive main` → own build), fresh DB
+`stokku_c3` migrated 1..14, API on :8092, and two fresh browser origins (:5181 / :5182) so
+device B's storage cannot contain anything device A wrote.
+
+| Gate | Target | Result |
+|---|---|---|
+| `docs/qa/two-device.sh` (HTTP) | `http://127.0.0.1:8092/v1` | **24 pass, 0 fail** |
+| `docs/qa/acceptance-spine.sh` (HTTP) | `http://127.0.0.1:8092/v1` | **63 pass, 1 fail** — F-15 only |
+
+### Browser two-device, 2-line sale
+
+Device A only ever signed up, created both items and sold; device B signed in afterwards on a
+separate origin.
+
+| | Device A (:5181) | Device B (:5182, pull only) |
+|---|---|---|
+| Items | Gula 1 kg 20 kg, Kopi Sachet 10 pcs | both present, **never created on B** |
+| Stock after sale | Gula 15 kg, Kopi 7 pcs | **identical** |
+| Laba rugi Nov | Pendapatan 72.000 · HPP 43.500 · laba kotor 28.500 · opex 0 · net 28.500 | **identical**, "Data server" |
+| HPP drill-down | — | **two lines: Rp37.500 (5 × 7.500) + Rp6.000 (3 × 2.000) = 43.500** |
+| Dot | Tersinkron | Tersinkron |
+
+**Section C browser evidence: PASS.** The HPP drill-down on the pull-only device is non-empty and
+equals device A's, which is the assertion this gate exists for.
+
+### Void on device B
+
+Voided the sale on A, synced B: Nota shows `S000001 · 25 Nov 2026 · Tunai Rp72.000 void` — still
+listed, marked void, not deleted. Correct.
+
+### F-15 still open, and now visibly wrong in the UI
+
+Same void makes both devices show `opex Rp72.000, net −Rp72.000` where it must be 0 — the
+server's `v_opex` counts the `sale_void` reversal as an operating expense. The client faithfully
+renders the server's wrong number. DB has the fix assigned; the harness assertion
+`voiding does not create opex` is the failing line and stays until it passes.
