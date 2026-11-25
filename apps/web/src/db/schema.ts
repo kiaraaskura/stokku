@@ -1,4 +1,5 @@
 import type { Db } from './db-api'
+import { uuidv7 } from '../lib/uuid'
 
 /**
  * Local SQLite schema (T-201) mirroring the server tables we need for the
@@ -11,7 +12,7 @@ import type { Db } from './db-api'
  * - Every mutation writes an outbox row with a UUIDv7 op_id in the same transaction.
  */
 
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -168,6 +169,31 @@ CREATE TABLE IF NOT EXISTS id_map (
   local_id TEXT PRIMARY KEY,
   server_id TEXT NOT NULL
 );
+
+-- v3: sync state — device id and pull cursor (server_seq watermark)
+CREATE TABLE IF NOT EXISTS sync_state (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  device_id TEXT NOT NULL,
+  cursor INTEGER NOT NULL DEFAULT 0,
+  last_synced_at TEXT
+);
+
+-- v3: items that were changed by another device (LWW notice)
+CREATE TABLE IF NOT EXISTS changed_elsewhere (
+  item_id TEXT PRIMARY KEY,
+  noticed_at TEXT NOT NULL
+);
+
+-- v3: rejected/conflicted ops surfaced to the "Perlu dicek" inbox
+CREATE TABLE IF NOT EXISTS inbox (
+  id TEXT PRIMARY KEY,             -- the outbox op_id
+  kind TEXT NOT NULL,              -- 'rejected' | 'conflict'
+  type TEXT NOT NULL,              -- op type
+  payload TEXT NOT NULL,
+  reason TEXT,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 `
 
 /** Run pending migrations. Idempotent; safe to call on every open. */
@@ -179,12 +205,16 @@ export function migrate(db: Db): void {
   db.transaction(() => {
     db.exec(DDL)
     // v1 -> v2: outbox.fail_reason may already exist if a prior attempt half-ran.
-    if (current === 1) {
+    if (current >= 1 && current < 2) {
       try {
         db.exec('ALTER TABLE outbox ADD COLUMN fail_reason TEXT')
       } catch {
         // column already present
       }
+    }
+    // v3: seed the sync device id once.
+    if (current < 3) {
+      db.run('INSERT OR IGNORE INTO sync_state (singleton, device_id, cursor) VALUES (1, ?, 0)', [uuidv7()])
     }
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`)
   })

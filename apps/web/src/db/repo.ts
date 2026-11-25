@@ -930,6 +930,326 @@ export function deleteLocalSale(db: Db, saleId: string): void {
   })
 }
 
+/** Requeue an inbox op back into the outbox (retry action, T-220). */
+export function addOutboxOpDirect(db: Db, input: { opId: string; type: string; payload: Record<string, unknown> }): void {
+  db.run(
+    `INSERT INTO outbox (op_id, type, payload, client_ts, status) VALUES (?, ?, ?, ?, 'pending')
+     ON CONFLICT(op_id) DO UPDATE SET status = 'pending', fail_reason = NULL`,
+    [input.opId, input.type, JSON.stringify(input.payload), new Date().toISOString()],
+  )
+}
+
+/** ---------- sync state (T-301..T-306) ---------- */
+
+export interface SyncState {
+  deviceId: string
+  cursor: number
+  lastSyncedAt: string | null
+}
+
+export function getSyncState(db: Db): SyncState {
+  const row = db.get<{ device_id: string; cursor: number; last_synced_at: string | null }>(
+    'SELECT device_id, cursor, last_synced_at FROM sync_state WHERE singleton = 1',
+  )
+  if (!row) {
+    const deviceId = uuidv7()
+    db.run('INSERT INTO sync_state (singleton, device_id, cursor) VALUES (1, ?, 0)', [deviceId])
+    return { deviceId, cursor: 0, lastSyncedAt: null }
+  }
+  return { deviceId: row.device_id, cursor: row.cursor, lastSyncedAt: row.last_synced_at }
+}
+
+/**
+ * Apply one pull page and advance the cursor ONLY inside the same local
+ * transaction (T-304) — if the commit fails, the cursor stays where it was
+ * and the page re-pulls next time.
+ */
+export function applyPullPage(
+  db: Db,
+  changes: { table: string; row: Record<string, unknown>; server_seq: number; deleted: boolean }[],
+  newCursor: number,
+  hasMore: boolean,
+  ownDeviceId: string,
+): void {
+  db.transaction(() => {
+    for (const change of changes) {
+      applyOneChange(db, change, ownDeviceId)
+    }
+    // Cursor advances only now — after every row of the page is committed.
+    db.run('UPDATE sync_state SET cursor = ?, last_synced_at = ? WHERE singleton = 1', [
+      newCursor,
+      new Date().toISOString(),
+    ])
+  })
+  void hasMore
+}
+
+function applyOneChange(
+  db: Db,
+  change: { table: string; row: Record<string, unknown>; server_seq: number; deleted: boolean },
+  _ownDeviceId: string,
+): void {
+  const row = change.row ?? {}
+  const id = String(row['id'] ?? '')
+  if (id === '') return
+  switch (change.table) {
+    case 'item': {
+      if (change.deleted) {
+        db.run('UPDATE item SET deleted_at = ?, active = 0 WHERE id = ?', [new Date().toISOString(), id])
+        return
+      }
+      const existing = db.get<{ updated_at: string | null }>('SELECT updated_at FROM item WHERE id = ?', [id])
+      const name = typeof row['name'] === 'string' ? row['name'] : ''
+      const baseUnit = typeof row['base_unit'] === 'string' ? row['base_unit'] : 'pcs'
+      const updatedAt = typeof row['updated_at'] === 'string' ? row['updated_at'] : new Date().toISOString()
+      if (existing) {
+        // LWW on the server clock: the server row wins; notice other devices' edits.
+        db.run(
+          `UPDATE item SET sku = ?, name = ?, category_id = ?, base_unit = ?, sale_price = ?, cost_avg = ?, min_stock_m = ?, active = ?, deleted_at = NULL, updated_at = ? WHERE id = ?`,
+          [
+            (row['sku'] as string | null) ?? null,
+            name,
+            (row['category_id'] as string | null) ?? null,
+            baseUnit,
+            Number(row['sale_price'] ?? 0),
+            Number(row['cost_avg'] ?? 0),
+            Math.round(Number(row['min_stock'] ?? 0) * 1000),
+            row['active'] === false ? 0 : 1,
+            updatedAt,
+            id,
+          ],
+        )
+        markChangedElsewhere(db, id)
+      } else {
+        db.run(
+          `INSERT INTO item (id, sku, name, category_id, base_unit, sale_price, cost_avg, min_stock_m, active, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id,
+            (row['sku'] as string | null) ?? null,
+            name,
+            (row['category_id'] as string | null) ?? null,
+            baseUnit,
+            Number(row['sale_price'] ?? 0),
+            Number(row['cost_avg'] ?? 0),
+            Math.round(Number(row['min_stock'] ?? 0) * 1000),
+            row['active'] === false ? 0 : 1,
+            updatedAt,
+          ],
+        )
+      }
+      // Stock projection from the server when present.
+      if (row['stock'] !== undefined) {
+        const outletId = getMeta(db, 'outlet_id')
+        if (outletId) {
+          db.run(
+            `INSERT INTO stock_level (outlet_id, item_id, qty_m) VALUES (?, ?, ?)
+             ON CONFLICT(outlet_id, item_id) DO UPDATE SET qty_m = excluded.qty_m`,
+            [outletId, id, Math.round(Number(row['stock'] ?? 0) * 1000)],
+          )
+        }
+      }
+      return
+    }
+    case 'stock_move': {
+      const existing = db.get<{ id: string }>('SELECT id FROM stock_move WHERE id = ?', [id])
+      if (existing) return
+      const outletId = getMeta(db, 'outlet_id')
+      db.run(
+        `INSERT INTO stock_move (id, outlet_id, item_id, qty_m, unit_cost, type, ref_type, ref_id, business_date, note, created_at, op_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          (row['outlet_id'] as string) ?? outletId ?? '',
+          String(row['item_id'] ?? ''),
+          Math.round(Number(row['qty'] ?? 0) * 1000),
+          row['unit_cost'] !== undefined && row['unit_cost'] !== null ? Number(row['unit_cost']) : 0,
+          String(row['type'] ?? 'in'),
+          (row['ref_type'] as string | null) ?? null,
+          (row['ref_id'] as string | null) ?? null,
+          String(row['business_date'] ?? ''),
+          (row['note'] as string | null) ?? null,
+          typeof row['created_at'] === 'string' ? row['created_at'] : new Date().toISOString(),
+          (row['op_id'] as string | null) ?? null,
+        ],
+      )
+      // Stock projection: replay the delta only for rows we did not have.
+      if (outletId) {
+        db.run(
+          `INSERT INTO stock_level (outlet_id, item_id, qty_m) VALUES (?, ?, ?)
+           ON CONFLICT(outlet_id, item_id) DO UPDATE SET qty_m = qty_m + excluded.qty_m`,
+          [outletId, String(row['item_id'] ?? ''), Math.round(Number(row['qty'] ?? 0) * 1000)],
+        )
+      }
+      return
+    }
+    case 'sale': {
+      const existing = db.get<{ id: string }>('SELECT id FROM sale WHERE id = ?', [id])
+      const number = Number(String(row['number'] ?? '').replace(/\D/g, '')) || 0
+      const serverPaid = row['paid'] === true
+      if (existing) {
+        // Never clobber a server-set paid flag with a stale local value (T-305).
+        db.run(
+          `UPDATE sale SET number = ?, total = ?, discount = ?, payment_method = ?, paid = MAX(paid, ?), mode = ?, note = ?, voided_at = ?, void_reason = ? WHERE id = ?`,
+          [
+            number,
+            Number(row['total'] ?? 0),
+            Number(row['discount'] ?? 0),
+            String(row['payment_method'] ?? 'cash'),
+            serverPaid ? 1 : 0,
+            String(row['mode'] ?? 'per_item'),
+            (row['note'] as string | null) ?? null,
+            (row['voided_at'] as string | null) ?? null,
+            (row['void_reason'] as string | null) ?? null,
+            id,
+          ],
+        )
+      } else {
+        db.run(
+          `INSERT INTO sale (id, outlet_id, number, total, discount, payment_method, paid, mode, business_date, voided_at, void_reason, note, op_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id,
+            (row['outlet_id'] as string) ?? '',
+            number,
+            Number(row['total'] ?? 0),
+            Number(row['discount'] ?? 0),
+            String(row['payment_method'] ?? 'cash'),
+            serverPaid ? 1 : 0,
+            String(row['mode'] ?? 'per_item'),
+            String(row['business_date'] ?? ''),
+            (row['voided_at'] as string | null) ?? null,
+            (row['void_reason'] as string | null) ?? null,
+            (row['note'] as string | null) ?? null,
+            (row['op_id'] as string | null) ?? null,
+            typeof row['created_at'] === 'string' ? row['created_at'] : new Date().toISOString(),
+          ],
+        )
+      }
+      return
+    }
+    case 'cash_entry': {
+      if (db.get<{ id: string }>('SELECT id FROM cash_entry WHERE id = ?', [id])) return
+      db.run(
+        `INSERT INTO cash_entry (id, outlet_id, direction, amount, category, method, ref_type, ref_id, business_date, note, op_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          (row['outlet_id'] as string) ?? '',
+          String(row['direction'] ?? 'in'),
+          Number(row['amount'] ?? 0),
+          String(row['category'] ?? ''),
+          (row['method'] as string | null) ?? null,
+          (row['ref_type'] as string | null) ?? null,
+          (row['ref_id'] as string | null) ?? null,
+          String(row['business_date'] ?? ''),
+          (row['note'] as string | null) ?? null,
+          (row['op_id'] as string | null) ?? null,
+          typeof row['created_at'] === 'string' ? row['created_at'] : new Date().toISOString(),
+        ],
+      )
+      return
+    }
+    case 'outlet': {
+      // QRIS settings arrive here: cache them for offline QR.
+      const outletId = getMeta(db, 'outlet_id')
+      if (outletId && id === outletId && (row['qris_payload'] !== undefined || row['qris_mode'] !== undefined)) {
+        setServerCache(db, `qris:${id}`, {
+          outlet_id: id,
+          mode: row['qris_mode'] ?? 'none',
+          image_url: null,
+          payload: (row['qris_payload'] as string | null) ?? null,
+          mdr_pct: Number(row['mdr_pct'] ?? 0),
+        })
+      }
+      return
+    }
+    case 'category': {
+      db.run(
+        'INSERT INTO category (id, name, sort) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, sort = excluded.sort',
+        [id, String(row['name'] ?? ''), Number(row['sort'] ?? 0)],
+      )
+      return
+    }
+    default:
+      // Unknown table: ignore, cursor still advances past it.
+      return
+  }
+}
+
+ /** Detect another device's edit (LWW notice, T-305). */
+function markChangedElsewhere(db: Db, itemId: string): void {
+  db.run(
+    'INSERT INTO changed_elsewhere (item_id, noticed_at) VALUES (?, ?) ON CONFLICT(item_id) DO UPDATE SET noticed_at = excluded.noticed_at',
+    [itemId, new Date().toISOString()],
+  )
+}
+
+export function listChangedElsewhere(db: Db): { itemId: string; noticedAt: string }[] {
+  return db
+    .all<{ item_id: string; noticed_at: string }>('SELECT item_id, noticed_at FROM changed_elsewhere')
+    .map((r) => ({ itemId: r.item_id, noticedAt: r.noticed_at }))
+}
+
+export function clearChangedElsewhere(db: Db, itemId: string): void {
+  db.run('DELETE FROM changed_elsewhere WHERE item_id = ?', [itemId])
+}
+
+/** ---------- "Perlu dicek" inbox (T-220) ---------- */
+
+export interface InboxRow {
+  id: string
+  kind: 'rejected' | 'conflict'
+  type: string
+  payload: Record<string, unknown>
+  reason: string | null
+  title: string
+  createdAt: string
+}
+
+export function addInboxRow(
+  db: Db,
+  entry: { id: string; kind: 'rejected' | 'conflict'; type: string; payload: Record<string, unknown>; reason: string | null; title: string },
+): void {
+  db.run(
+    `INSERT INTO inbox (id, kind, type, payload, reason, title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, reason = excluded.reason, title = excluded.title, created_at = excluded.created_at`,
+    [
+      entry.id,
+      entry.kind,
+      entry.type,
+      JSON.stringify(entry.payload),
+      entry.reason,
+      entry.title,
+      new Date().toISOString(),
+    ],
+  )
+}
+
+export function listInbox(db: Db): InboxRow[] {
+  return db
+    .all<{ id: string; kind: string; type: string; payload: string; reason: string | null; title: string; created_at: string }>(
+      'SELECT id, kind, type, payload, reason, title, created_at FROM inbox ORDER BY created_at DESC',
+    )
+    .map((r) => ({
+      id: r.id,
+      kind: r.kind as InboxRow['kind'],
+      type: r.type,
+      payload: JSON.parse(r.payload) as Record<string, unknown>,
+      reason: r.reason,
+      title: r.title,
+      createdAt: r.created_at,
+    }))
+}
+
+export function removeInboxRow(db: Db, id: string): void {
+  db.run('DELETE FROM inbox WHERE id = ?', [id])
+}
+
+export function inboxCount(db: Db): number {
+  return db.get<{ n: number }>('SELECT COUNT(*) AS n FROM inbox')!.n
+}
+
 /** ---------- outbox (sync increment) ---------- */
 
 export interface PendingOp {
@@ -1389,6 +1709,15 @@ export const repoMethods = {
   listOutbox,
   clearOutboxOp,
   markOutboxFailed,
+  addOutboxOpDirect,
+  getSyncState,
+  applyPullPage,
+  addInboxRow,
+  listInbox,
+  removeInboxRow,
+  inboxCount,
+  listChangedElsewhere,
+  clearChangedElsewhere,
   setServerSession,
   getServerCache,
   setServerCache,
@@ -1426,6 +1755,12 @@ export const MUTATING_METHODS = new Set<RepoMethodName>([
   'setServerCache',
   'clearOutboxOp',
   'markOutboxFailed',
+  'addOutboxOpDirect',
+  'getSyncState',
+  'applyPullPage',
+  'addInboxRow',
+  'removeInboxRow',
+  'clearChangedElsewhere',
   'applyServerItems',
   'applyServerCategories',
   'applyServerStockMove',

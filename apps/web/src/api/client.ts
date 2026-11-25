@@ -300,6 +300,23 @@ export class ApiClient {
     return this.request<ApiOpnameSession>('/opname', { method: 'POST', body: JSON.stringify(input), auth: true })
   }
 
+  // ---- sync (T-302/T-303 wire contract, docs/SYNC_INCREMENT.md) ----
+
+  async syncPush(input: {
+    device_id: string
+    ops: { op_id: string; type: string; payload: Record<string, unknown>; client_ts: string }[]
+  }): Promise<{ results: { op_id: string; status: 'applied' | 'duplicate' | 'rejected'; reason: string | null }[]; cursor: number }> {
+    return this.request('/sync/push', { method: 'POST', body: JSON.stringify(input), auth: true })
+  }
+
+  async syncPull(cursor: number, limit = 500): Promise<{
+    changes: { table: string; row: Record<string, unknown>; server_seq: number; deleted: boolean }[]
+    cursor: number
+    has_more: boolean
+  }> {
+    return this.request(`/sync/pull?cursor=${cursor}&limit=${limit}`, { auth: true })
+  }
+
   async getOpname(id: string): Promise<ApiOpnameSession> {
     return this.request<ApiOpnameSession>(`/opname/${encodeURIComponent(id)}`, { auth: true })
   }

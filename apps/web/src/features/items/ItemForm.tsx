@@ -20,7 +20,7 @@ interface UnitDraft {
 export function ItemForm() {
   const { id } = useParams()
   const isEdit = id !== undefined
-  const { repo, toast, refresh, online, apiMode, flushAgain } = useAppState()
+  const { repo, toast, refresh, online, apiMode, syncAgain } = useAppState()
   const { api } = useAuth()
   const { can } = useCapabilities()
   const showCost = can('cost.read')
@@ -156,7 +156,7 @@ export function ItemForm() {
         },
         local: () => (isEdit && id ? repo.call('updateItem', id, localInput) : repo.call('createItem', localInput)),
       })
-      if (source === 'local') flushAgain()
+      if (source === 'local') syncAgain()
       toast(t('form.itemSaved'))
       void refresh()
       navigate('/barang')

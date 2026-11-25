@@ -200,7 +200,7 @@ export function CashBook() {
 }
 
 function CashEntrySheet({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
-  const { repo, online, apiMode, outlet, flushAgain, toast } = useAppState()
+  const { repo, online, apiMode, outlet, syncAgain, toast } = useAppState()
   const { api } = useAuth()
   const { t, locale } = useI18n()
   const [direction, setDirection] = useState<'in' | 'out'>('out')
@@ -257,7 +257,7 @@ function CashEntrySheet({ open, onClose, onSaved }: { open: boolean; onClose: ()
         local: () => repo.call('addCashEntry', input),
       })
       if (source === 'local') {
-        flushAgain()
+        syncAgain()
         toast(t('sync.queued'))
       } else {
         toast(t('cash.saved'))

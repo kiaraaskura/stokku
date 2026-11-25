@@ -18,6 +18,7 @@ import { Dashboard } from './features/reports/Dashboard'
 import { OpnameScreen } from './features/opname/OpnameScreen'
 import { QrScreen } from './features/qris/QrScreen'
 import { QrisSettings } from './features/qris/QrisSettings'
+import { InboxScreen } from './features/inbox/InboxScreen'
 import { DevRoute } from './dev/DevRoute'
 import { CrashBoundary } from './components/CrashBoundary'
 
@@ -59,6 +60,7 @@ export function App(): React.ReactNode {
                 <Route path="laporan/ringkasan" element={<Dashboard />} />
                 <Route path="opname" element={<OpnameScreen />} />
                 <Route path="qris-settings" element={<QrisSettings />} />
+                <Route path="perlu-dicek" element={<InboxScreen />} />
                 <Route path="dev" element={<DevRoute />} />
                 <Route path="*" element={<Navigate to="/barang" replace />} />
               </Route>

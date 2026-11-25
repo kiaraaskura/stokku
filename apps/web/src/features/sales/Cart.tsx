@@ -28,7 +28,7 @@ const PAYMENT_METHODS: { id: PaymentMethod; key: 'sell.payment.cash' | 'sell.pay
 ]
 
 export function Cart() {
-  const { repo, toast, refresh, online, apiMode, outlet, flushAgain } = useAppState()
+  const { repo, toast, refresh, online, apiMode, outlet, syncAgain } = useAppState()
   const { api } = useAuth()
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -170,7 +170,7 @@ export function Cart() {
       if (source === 'server') {
         toast(`${t('sell.saved', { total: formatIDR(total) })} · ${t('common.serverData')} · ${(elapsed / 1000).toFixed(2)}s`)
       } else {
-        flushAgain()
+        syncAgain()
         toast(`${t('sell.saved', { total: formatIDR(total) })} · ${t('sync.queued')}`)
       }
       setLines([])
