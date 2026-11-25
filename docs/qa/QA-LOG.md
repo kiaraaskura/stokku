@@ -360,3 +360,27 @@ opname session/line tables added to DATA_MODEL §1 with the immutability rule.
 
 Note for the record: my first two QRIS payload attempts were rejected — that was my hand-built TLV,
 not a server fault. A correct CRC payload was accepted. The validator is doing its job.
+
+---
+
+## PRDTASK — the `sale_line` sync gap (2026-11-25), decided
+
+Reproduced on :8099 myself, fresh tenant, a 2-line sale (total 25.000):
+
+```
+pull?cursor=0&limit=200 -> tables {tenant, outlet, membership, cash_category,
+  item, stock_move, stock_level, sale, payment, cash_entry}
+sale rows pulled: 1   has "lines" key: false
+sale_line rows pulled: 0
+```
+
+So a second device receives revenue but cannot render the sale's lines or the HPP drill-down.
+This would fail acceptance A7 on device B and it is exactly the class of quiet data loss section C
+exists to catch.
+
+Decision (in docs/SYNC_INCREMENT.md): embed lines in the sale payload on pull, handler-side, no
+schema change. Rejected the alternative of giving sale_line its own tenant_id + change_log + RLS —
+a migration to fix an artefact of per-row fetching, when a sale is always an aggregate.
+
+Also confirmed from the same pull: `stock_level` does pull (so device B can render stock without
+replaying moves), and `voided` is carried on the sale rather than being a tombstone.

@@ -47,6 +47,22 @@ GET /v1/sync/pull?cursor=88421&limit=500
   must never assume it authored everything it sees, and must not clobber a server-set `paid` flag with
   a stale local value.
 
+## The `sale_line` gap — decided 2026-11-25
+
+`sale_line` has no `tenant_id` and no `change_log` (it is a pure child of `sale`, per DATA_MODEL).
+Consequence, reproduced on the live API: device B pulls a sale row with **no `lines` key and zero
+`sale_line` rows**, so revenue arrives but the HPP drill-down (acceptance A7) is empty on the second
+device.
+
+**Decision: embed the lines in the sale row payload on pull.** Handler-side, zero schema change —
+`to_jsonb(s) || jsonb_build_object('lines', …)` via `LEFT JOIN LATERAL`. Rationale: the alternative
+(denormalize `tenant_id` onto `sale_line` + a change_log trigger + RLS) is a real migration to solve a
+problem that only exists because we fetch per-row; a sale is always written and read as one aggregate,
+so it should sync as one aggregate. Do not add `sale_line` to the pull as its own table.
+
+`voided` stays a field on the sale, not a tombstone: a voided sale still exists and must render as
+voided, not disappear.
+
 ## Client rules
 
 - Outbox persists in SQLite; the row and its op are written in the **same local transaction**.
