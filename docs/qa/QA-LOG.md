@@ -268,3 +268,70 @@ Proof: wrong target → `FAIL target is NOT the Stokku API` then `exit=90`. Corr
 `pass=61 fail=0`, `exit=0`.
 
 Rule for the team: never quote a harness pass count without the target. The guard enforces it now.
+
+## Run 7 — 2026-11-25, merged main after the guard + frontend + deploy merges
+
+Merged in this order, after reviewing each for ownership (only docs/, apps/web/, and
+.github+infra+.env.example respectively) and confirming the merge base explained the apparent
+file churn:
+
+| # | Branch | Commit | What |
+|---|---|---|---|
+| 1 | docs-ratify | b8d464b | harness defaults to :8099, identity guard on /health |
+| 2 | frontend | e2ac08c, 3d5e0d5 | web app wired to the live API |
+| 3 | deploy | ee4b601 | CI runs the DB-backed tests; admin DSNs documented |
+
+main = `2478c72`. Plus my own follow-up `4f1a59b` hardening the guard (below).
+
+### Guard: verified by trying to defeat it
+
+| Target | Result |
+|---|---|
+| `:8099` (real API) | `PASS target is the Stokku API`, prints `TARGET ...`, exit 0 |
+| `:8098` (fake server, 200 without `db.status`) | `FAIL target is NOT the Stokku API`, **exit 90** |
+| `:9` (closed port) | **exit 90** |
+
+Found while testing: the original guard read a fixed `/tmp/qa-health.json`, so a dead target
+passed on a **stale** file from a previous run and then printed 59 failures instead of aborting.
+Fixed in `4f1a59b`: fresh `mktemp` per run, non-200 is a FAIL, and the target URL is printed
+with every result.
+
+### Trap found in the environment, not the code
+
+The API listening on `:8099` was running from Backend's **unmerged** worktree
+(`/wt/backend/.../stokku-api`) and answered `/outlets/{id}/qris` with 200 — an endpoint that
+does not exist on merged main. A 64/64 there would have been a pass against unmerged code.
+Every number below therefore comes from a binary built from `main` (`git archive main` into a
+temp dir, built there). `/proc/<pid>/exe` is how I caught it; worth checking before any report.
+
+### Results on merged main
+
+| Check | Result |
+|---|---|
+| `apps/web` tests / build | **43/43**, 127.50 KB gz |
+| `cargo fmt --check` / `clippy -D warnings` | clean |
+| `cargo test` with `STOKKU_TEST_ADMIN_URL` | **4/4** |
+| fresh DB, migrate as non-superuser, seed | 1..12, exit 0 |
+| harness, **main-built** binary, rebuilt dev DB, incl. staff | **64 pass, 0 fail**, `TARGET http://127.0.0.1:8096/v1` |
+| harness, own fresh DB | **61 pass, 0 fail**, `TARGET http://127.0.0.1:8097/v1` |
+
+`/outlets/{id}/qris`, `/reports/stock`, `/reports/sales`, `/reports/dashboard` all 404 on merged
+main, as documented.
+
+### Browser pass against the API (not the local store)
+
+Logged in as `owner@demo.test` at `:5197` with `VITE_API_URL=http://127.0.0.1:8096`. Item list
+showed the server's 20 seeded items, sync dot read "Tersinkron", no console errors. Laba rugi
+November was empty (correct — the seed covers Aug–Oct); October showed **981.000 / 508.500 /
+472.500 / 230.000 / 242.500** with "Pendapatan belum dibayar Rp96.000", labelled **"Data
+server"** — identical to `GET /reports/laba-rugi` on the main-built API. So the read path is
+genuinely server-backed, not locally computed.
+
+### Still unproven
+- Section C (sync T-301..T-310) — not built. The outbox is queued-retry only, no `/sync/push`.
+- Section D (QRIS) and B11 (opname) — Backend/Frontend/DB on Sprint 2, unmerged branches.
+- Report screens and F24 ("sales report matches the sales list") — the endpoints are Sprint 2.
+- `POST /items` and `/cash-entries` carry no `op_id`, so those two are not exactly-once.
+- Staff can post an item cost through the API even though the UI hides it.
+- Docker absent: `make up`, image builds and compose never run. Repo not on GitHub: CI inactive.
+- Browser offline/queued-retry flow not re-run by me this pass (Frontend demonstrated it).
