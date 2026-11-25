@@ -5,6 +5,7 @@ pub mod opname;
 pub mod qris;
 pub mod reports;
 pub mod sales;
+pub mod sync;
 
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -72,6 +73,8 @@ pub fn router(state: AppState) -> Router {
             "/v1/outlets/{id}/qris",
             get(qris::get_settings).put(qris::put_settings),
         )
+        .route("/v1/sync/push", post(sync::push))
+        .route("/v1/sync/pull", get(sync::pull))
         .route("/v1/opname", post(opname::create))
         .route("/v1/opname/{id}", get(opname::get_one))
         .route(

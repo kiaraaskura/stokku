@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::Row;
+use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 use axum::extract::{Path, State};
@@ -113,15 +113,28 @@ pub async fn create(
     Json(body): Json<CreateOpnameReq>,
 ) -> ApiResult<Json<Value>> {
     ctx.require(Cap::StockWrite)?;
+    let mut tx = begin_tx(&st.pool, &ctx).await?;
+    let v = apply_create_session(&mut tx, &ctx, &body).await?;
+    tx.commit().await?;
+    Ok(Json(v))
+}
+
+/// The single session-creation path (snapshot system_qty), shared by REST
+/// and sync push.
+pub async fn apply_create_session(
+    tx: &mut PgConnection,
+    ctx: &AuthCtx,
+    body: &CreateOpnameReq,
+) -> ApiResult<Value> {
+    ctx.require(Cap::StockWrite)?;
     let business_date = match &body.business_date {
         Some(s) => crate::util::parse_date(s)?,
         None => today_jakarta(),
     };
 
-    let mut tx = begin_tx(&st.pool, &ctx).await?;
     let outlet_id = match body.outlet_id {
         Some(o) => o,
-        None => crate::util::default_outlet_id(&mut tx).await?,
+        None => crate::util::default_outlet_id(&mut *tx).await?,
     };
 
     // item selection: explicit ids > category > all non-deleted items
@@ -206,13 +219,11 @@ pub async fn create(
         .await?;
     }
 
-    let session = load_session(&mut tx, session_id).await?;
-    let lines = lines_json(&mut tx, &session).await?;
-    tx.commit().await?;
-
+    let session = load_session(&mut *tx, session_id).await?;
+    let lines = lines_json(&mut *tx, &session).await?;
     let mut v = session_json(&session);
     v["lines"] = Value::Array(lines);
-    Ok(Json(v))
+    Ok(v)
 }
 
 /// GET /v1/opname/{id} — session + counts (history kept forever).
@@ -251,6 +262,20 @@ pub async fn patch_lines(
     Json(body): Json<PatchLinesReq>,
 ) -> ApiResult<Json<Value>> {
     ctx.require(Cap::StockWrite)?;
+    let mut tx = begin_tx(&st.pool, &ctx).await?;
+    let v = apply_patch_lines(&mut tx, &ctx, id, &body).await?;
+    tx.commit().await?;
+    Ok(Json(v))
+}
+
+/// The single line-update path, shared by REST and sync push.
+pub async fn apply_patch_lines(
+    tx: &mut PgConnection,
+    ctx: &AuthCtx,
+    id: Uuid,
+    body: &PatchLinesReq,
+) -> ApiResult<Value> {
+    ctx.require(Cap::StockWrite)?;
     if body.lines.is_empty() {
         return Err(ApiError::validation_field(
             "lines tidak boleh kosong",
@@ -258,8 +283,7 @@ pub async fn patch_lines(
             "minimal satu baris",
         ));
     }
-    let mut tx = begin_tx(&st.pool, &ctx).await?;
-    let session = load_session(&mut tx, id).await?;
+    let session = load_session(tx, id).await?;
     if session.status != "open" {
         return Err(ApiError::Conflict(format!(
             "Sesi opname ini sudah {}, hitungannya tidak bisa diubah",
@@ -282,11 +306,10 @@ pub async fn patch_lines(
             ));
         }
     }
-    let lines = lines_json(&mut tx, &session).await?;
-    tx.commit().await?;
+    let lines = lines_json(tx, &session).await?;
     let mut v = session_json(&session);
     v["lines"] = Value::Array(lines);
-    Ok(Json(v))
+    Ok(v)
 }
 
 /// POST /v1/opname/{id}/post — one adjust stock_move per non-zero
@@ -299,7 +322,16 @@ pub async fn post(
 ) -> ApiResult<Json<Value>> {
     ctx.require(Cap::StockWrite)?;
     let mut tx = begin_tx(&st.pool, &ctx).await?;
-    let session = load_session(&mut tx, id).await?;
+    let v = apply_opname_post(&mut tx, &ctx, id).await?;
+    tx.commit().await?;
+    Ok(Json(v))
+}
+
+/// The single opname-posting path (all-or-nothing adjusts + status),
+/// shared by REST and sync push.
+pub async fn apply_opname_post(tx: &mut PgConnection, ctx: &AuthCtx, id: Uuid) -> ApiResult<Value> {
+    ctx.require(Cap::StockWrite)?;
+    let session = load_session(tx, id).await?;
     if session.status != "open" {
         return Err(ApiError::Conflict(format!(
             "Sesi opname ini sudah {}, tidak bisa diposting ulang",
@@ -334,7 +366,7 @@ pub async fn post(
             continue;
         }
         let move_id = post_move(
-            &mut tx,
+            tx,
             ctx.user_id,
             &PostMove {
                 item_id,
@@ -369,15 +401,13 @@ pub async fn post(
     .execute(&mut *tx)
     .await?;
 
-    let session = load_session(&mut tx, id).await?;
-    let lines = lines_json(&mut tx, &session).await?;
-    tx.commit().await?;
-
+    let session = load_session(tx, id).await?;
+    let lines = lines_json(tx, &session).await?;
     let mut sv = session_json(&session);
     sv["lines"] = Value::Array(lines);
-    Ok(Json(json!({
+    Ok(json!({
         "posted": true,
         "adjustments": adjustments,
         "session": sv,
-    })))
+    }))
 }

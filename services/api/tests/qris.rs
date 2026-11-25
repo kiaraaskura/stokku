@@ -167,6 +167,7 @@ async fn qris_settings_and_confirm_flow() {
             cost: Some(6000),
             min_stock: None,
             active: None,
+            op_id: None,
         }),
     )
     .await

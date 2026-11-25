@@ -64,14 +64,51 @@ pub struct CreateItemReq {
     #[serde(default, deserialize_with = "crate::util::de_qty_opt")]
     pub min_stock: Option<Decimal>,
     pub active: Option<bool>,
+    pub op_id: Option<Uuid>,
 }
 
-/// POST /v1/items — owner only (item.write).
+/// POST /v1/items — owner only (item.write). op_id dedupes retries
+/// through op_log (the exactly-once gap Frontend flagged).
 pub async fn create(
     State(st): State<AppState>,
     ctx: AuthCtx,
     Json(body): Json<CreateItemReq>,
 ) -> ApiResult<Json<Value>> {
+    ctx.require(Cap::ItemWrite)?;
+    let mut tx = begin_tx(&st.pool, &ctx).await?;
+    if let Some(op_id) = body.op_id {
+        let dup: Option<Value> = sqlx::query_scalar("select result from op_log where op_id = $1")
+            .bind(op_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some(r) = dup {
+            return Ok(Json(
+                json!({ "duplicate": true, "op_id": op_id, "result": r }),
+            ));
+        }
+    }
+    let v = apply_create_item(&mut tx, &ctx, &body).await?;
+    if let Some(op_id) = body.op_id {
+        let row_id: Uuid = serde_json::from_value(v["id"].clone()).unwrap_or(op_id);
+        sqlx::query(
+            "insert into op_log (op_id, tenant_id, result)
+             values ($1, current_setting('app.tenant_id')::uuid, $2)",
+        )
+        .bind(op_id)
+        .bind(json!({ "status": "applied", "endpoint": "item.create", "row_id": row_id }))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(v))
+}
+
+/// The single item-create path, shared by REST and sync push.
+pub async fn apply_create_item(
+    tx: &mut PgConnection,
+    ctx: &AuthCtx,
+    body: &CreateItemReq,
+) -> ApiResult<Value> {
     ctx.require(Cap::ItemWrite)?;
     if body.name.trim().is_empty() {
         return Err(ApiError::validation_field(
@@ -134,7 +171,6 @@ pub async fn create(
     }
 
     let id = now_v7();
-    let mut tx = begin_tx(&st.pool, &ctx).await?;
 
     sqlx::query(
         "insert into item (id, tenant_id, sku, name, category_id, base_unit, sale_price,
@@ -189,8 +225,7 @@ pub async fn create(
         .flatten()
         .map(|u| json!({"name": u.name.trim(), "factor": qty_json(&u.factor)}))
         .collect::<Vec<_>>());
-    tx.commit().await?;
-    Ok(Json(v))
+    Ok(v)
 }
 
 #[derive(Deserialize)]
@@ -327,19 +362,61 @@ pub async fn update(
     Json(body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
     ctx.require(Cap::ItemWrite)?;
+    // op_id is transport-level idempotency, not an item field
+    let op_id = body
+        .get("op_id")
+        .and_then(|v| v.as_str())
+        .and_then(|v| Uuid::parse_str(v).ok());
+    let body = if op_id.is_some() {
+        let mut b = body.clone();
+        b.as_object_mut().unwrap().remove("op_id");
+        b
+    } else {
+        body
+    };
+    validate_item_patch_fields(&body)?;
+
+    let mut tx = begin_tx(&st.pool, &ctx).await?;
+    if let Some(op_id) = op_id {
+        let dup: Option<Value> = sqlx::query_scalar("select result from op_log where op_id = $1")
+            .bind(op_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some(r) = dup {
+            return Ok(Json(
+                json!({ "duplicate": true, "op_id": op_id, "result": r }),
+            ));
+        }
+    }
+    let v = apply_update_item(&mut tx, &ctx, id, &body).await?;
+    if let Some(op_id) = op_id {
+        sqlx::query(
+            "insert into op_log (op_id, tenant_id, result)
+             values ($1, current_setting('app.tenant_id')::uuid, $2)",
+        )
+        .bind(op_id)
+        .bind(json!({ "status": "applied", "endpoint": "item.update", "row_id": id }))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(v))
+}
+
+fn validate_item_patch_fields(body: &Value) -> ApiResult<()> {
+    const KNOWN: [&str; 10] = [
+        "name",
+        "sku",
+        "category_id",
+        "base_unit",
+        "sale_price",
+        "cost",
+        "min_stock",
+        "active",
+        "barcodes",
+        "units",
+    ];
     if let Some(fields) = body.as_object() {
-        const KNOWN: [&str; 10] = [
-            "name",
-            "sku",
-            "category_id",
-            "base_unit",
-            "sale_price",
-            "cost",
-            "min_stock",
-            "active",
-            "barcodes",
-            "units",
-        ];
         if fields.keys().any(|k| !KNOWN.contains(&k.as_str())) {
             let unknown: Vec<&String> = fields
                 .keys()
@@ -355,8 +432,19 @@ pub async fn update(
             )));
         }
     }
+    Ok(())
+}
 
-    let mut tx = begin_tx(&st.pool, &ctx).await?;
+/// The single item-update path, shared by REST and sync push.
+/// `fields` carries only item columns (no op_id).
+pub async fn apply_update_item(
+    tx: &mut PgConnection,
+    ctx: &AuthCtx,
+    id: Uuid,
+    body: &Value,
+) -> ApiResult<Value> {
+    ctx.require(Cap::ItemWrite)?;
+    validate_item_patch_fields(body)?;
     let exists: Option<Uuid> =
         sqlx::query_scalar("select id from item where id = $1 and deleted_at is null")
             .bind(id)
@@ -558,8 +646,7 @@ pub async fn update(
         .iter()
         .map(|(name, factor)| json!({"name": name, "factor": qty_json(factor)}))
         .collect::<Vec<_>>());
-    tx.commit().await?;
-    Ok(Json(v))
+    Ok(v)
 }
 
 fn bind_value<'q>(

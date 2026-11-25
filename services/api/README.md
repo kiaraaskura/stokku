@@ -64,6 +64,14 @@ Auth: `Authorization: Bearer <access_jwt>`.
   (idempotent per sale, 409 on second);
   `GET /reports/stock`, `GET /reports/sales?group_by=day|item|category`,
   `GET /reports/dashboard` — reading DB's 0013 views (security_invoker)
+- Sync (docs/SYNC_INCREMENT.md): `POST /v1/sync/push` (max 50 ops, one tx
+  per batch, per-op savepoints — rejected ops don't abort it; exactly-once
+  via op_log.op_id; ops: stock_move.create, sale.create, cash_entry.create,
+  item.create, item.update, opname.post) and `GET /v1/sync/pull?cursor=&limit=`
+  (change_log feed, server_seq cursor, item soft deletes as tombstones).
+  Every op applies through the SAME core functions as the REST handlers.
+- `POST /items` and `PATCH /items/{id}` now accept `op_id` (dedupe via
+  op_log), like sales, stock moves and cash entries.
 - `GET /health` (public: build hash + DB status)
 
 Money is integer rupiah; qty is serialized as a JSON number (parsed from

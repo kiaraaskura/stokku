@@ -119,6 +119,7 @@ async fn setup(tag: &str) -> Setup {
                 cost: Some(3000),
                 min_stock: None,
                 active: None,
+                op_id: None,
             }),
         )
         .await
