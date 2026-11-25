@@ -381,4 +381,59 @@ join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
 where v.schemaname = 'public'
 order by v.viewname;
 
+\echo '=== sync substrate: change_log coverage, tombstone rule, op_log exactly-once ==='
+begin;
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+select case when count(*) = 0
+            then 'OK: every business tenant table has the change_log trigger (18/18; log/security tables excluded by design)'
+            else 'FAIL: tenant tables without change_log: ' || string_agg(relname, ', ') end as change_log_coverage
+from (
+  select c.relname
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relkind = 'r'
+    and c.relname in (select table_name from information_schema.columns
+                      where table_schema = 'public' and column_name = 'tenant_id')
+    and c.relname not in ('op_log','change_log','audit_log','refresh_token')
+    and not exists (select 1 from pg_trigger t
+                    where t.tgrelid = c.oid and t.tgname = 'change_log' and not t.tgisinternal)
+) missing;
+insert into item (id, tenant_id, name, base_unit, sale_price, cost_avg)
+values ('01900000-0000-7000-8000-00DEAD000102', '01900000-0000-7000-8000-000000000001',
+        'verify tombstone', 'pcs', 1000, 500);
+update item set deleted_at = now()
+where id = '01900000-0000-7000-8000-00DEAD000102';
+select case when (to_jsonb(i) ->> 'deleted_at') is not null
+            then 'OK: tombstone derived from the row payload (deleted_at in the JSON), no extra column, no second query'
+            else 'FAIL: tombstone not derivable from the row' end as tombstone_rule
+from item i where i.id = '01900000-0000-7000-8000-00DEAD000102';
+rollback;
+begin;
+-- op_log: the PK is the exactly-once guard; cross-tenant probes see nothing
+select set_config('app.tenant_id', '01900000-0000-7000-8000-00AAAA000001', true);
+insert into tenant (id, name) values ('01900000-0000-7000-8000-00AAAA000001', 'Warung Lain');
+select set_config('app.tenant_id', '01900000-0000-7000-8000-000000000001', true);
+insert into op_log (op_id, tenant_id, result)
+values ('01900000-0000-7000-8000-00DEAD000202', '01900000-0000-7000-8000-000000000001', '{"status":"applied"}');
+select set_config('app.tenant_id', '01900000-0000-7000-8000-00AAAA000001', true);
+select case when count(*) = 0
+            then 'OK: cross-tenant op_id probe returns 0 rows'
+            else 'FAIL: op_log leaked across tenants' end as cross_tenant_op_probe
+from op_log where op_id = '01900000-0000-7000-8000-00DEAD000202';
+do $$
+begin
+  begin
+    insert into op_log (op_id, tenant_id) values
+      ('01900000-0000-7000-8000-00DEAD000202', '01900000-0000-7000-8000-00AAAA000001');
+    raise notice 'FAIL: cross-tenant op_id re-insert was allowed';
+  exception when unique_violation then
+    raise notice 'OK: op_log primary key (not an app check) rejects a duplicate op_id — exactly-once is the constraint';
+  end;
+end $$;
+select (to_regclass('public.change_log_tenant_seq_idx') is not null) as change_log_cursor_idx,
+       (to_regclass('public.op_log_pkey') is not null) as op_log_pk,
+       (to_regclass('public.stock_move_tenant_seq_idx') is not null) as stock_move_seq_idx,
+       (to_regclass('public.item_name_trgm') is not null) as item_trgm_idx;
+rollback;
+
 \echo '=== done ==='

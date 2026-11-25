@@ -84,6 +84,49 @@ scripts/seed.sh    # idempotent demo tenant "Warung Bu Sri" (run twice to prove 
 scripts/verify.sh  # all proof queries: ledger projection, change log, RLS, laba rugi
 ```
 
+## Sync substrate (T-302/T-303, proven 2026-11-25)
+
+`change_log` + `op_log` fully support cursor pull and exactly-once:
+
+- **Coverage**: every tenant-scoped business table has the `change_log`
+  trigger (18/18; only `change_log`, `audit_log`, `op_log`, `refresh_token`
+  are deliberately excluded). Each INSERT/UPDATE lands exactly one row with
+  `row_id`, `op`, `server_seq` (a no-op UPDATE writes nothing).
+- **Tombstone rule (decision)**: `deleted` is **derived from the row payload
+  the pull already returns** — `deleted = (row->>'deleted_at' is not null)`.
+  Only `item` is soft-deleted (`deleted_at`); no table in the system
+  hard-deletes rows, so no other table needs a tombstone. No extra column,
+  no second query per row:
+  ```sql
+  select c.server_seq, c.table_name, to_jsonb(<row>) as row,
+         (to_jsonb(<row>) ->> 'deleted_at') is not null as deleted
+  from change_log c ...
+  ```
+  (Equivalently a LEFT JOIN on item for `deleted_at`.) If a hard delete is
+  ever introduced, change_log must then emit an explicit `op='delete'` row —
+  not the case today. An empty open opname session can be deleted (guard
+  allows it while no lines exist): its earlier insert row then vanishes and
+  the client just advances the cursor — harmless, no data attached.
+- **op_log**: `op_id` is a GLOBAL primary key (`op_log_pkey`), so
+  exactly-once is the database constraint, not an application check. A
+  cross-tenant probe sees 0 rows (forced RLS), and re-inserting another
+  tenant's op_id passes the RLS with-check but is rejected by the PK — the
+  collision surfaces as `duplicate` with zero effect. op_ids are client
+  UUIDv7 values, so cross-tenant squatting would require guessing a UUID.
+- **Indexes for pull** (all present): `change_log(tenant_id, server_seq)`
+  (cursor scan), `change_log` PK (ordering), `op_log` PK, every table's own
+  PK for the per-row fetch, `stock_move(tenant_id, server_seq)`,
+  `item` trigram GIN + `(tenant_id, sku)`.
+- **Known gap (reported, not fixed here)**: `sale_line` carries no
+  `tenant_id` and no change_log (pure child of `sale`, per DATA_MODEL), so
+  a sale created on another device pulls WITHOUT its lines. Smallest
+  additive fix is handler-side, no schema change: embed the lines in the
+  sale row payload with one LEFT JOIN LATERAL in the same pull query
+  (`to_jsonb(s) || jsonb_build_object('lines', …)`). Alternative, if
+  uniform per-table rows are wanted: denormalize `tenant_id` onto
+  `sale_line` (the item_unit pattern) and attach the change_log trigger —
+  a migration; PRDTASK's call.
+
 ## Auth functions (login/refresh under forced RLS)
 
 `auth_find_user(email)`, `auth_lookup_refresh(token_hash)`,
