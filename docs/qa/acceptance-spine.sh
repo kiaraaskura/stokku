@@ -55,21 +55,25 @@ f()   { row "$1" | jq -r "$2 // empty"; }
 say "0. health"
 # /health lives at the server root, not under /v1
 HEALTH_BASE="${BASE%/v1}"
-CODE=$(curl -sS -o /tmp/qa-health.json -w '%{http_code}' "$HEALTH_BASE/health")
-BODY=$(cat /tmp/qa-health.json)
+# Fresh file each run: a leftover file from an earlier run would let a dead target
+# pass the identity guard on stale data (found by running this against a closed port).
+HEALTH_FILE="$(mktemp "${TMPDIR:-/tmp}/stokku-health.XXXXXX")"
+CODE=$(curl -sS -m 15 -o "$HEALTH_FILE" -w '%{http_code}' "$HEALTH_BASE/health" 2>/dev/null)
+BODY=$(cat "$HEALTH_FILE" 2>/dev/null || true)
+rm -f "$HEALTH_FILE"
 echo "  GET /health -> $CODE $BODY"
 [ "$CODE" = "200" ] && ok "health 200" || bad "health expected 200 got $CODE"
 
 # Identity guard. Port 8080 on a shared machine is often an unrelated service, and
 # some of them answer 200 to /health and even to /reports/stock — a wrong-target run
 # then looks green. Stokku's /health carries a "db.status" key; nothing else here does.
-if row "$BODY" | jq -e 'has("db") and (.db|has("status"))' >/dev/null 2>&1; then
-  ok "target is the Stokku API"
-else
-  bad "target is NOT the Stokku API — got no db.status in /health (is API_BASE pointing at another app?)"
-  echo "  ABORT: refusing to report a result against an unknown service at $HEALTH_BASE" >&2
+if [ "$CODE" != "200" ] || ! printf '%s' "$BODY" | jq -e 'has("db") and (.db|has("status"))' >/dev/null 2>&1; then
+  bad "target is NOT the Stokku API — no reachable db.status in /health (is API_BASE pointing at another app or a dead port?)"
+  echo "  ABORT: refusing to report a result against $HEALTH_BASE (target: $BASE)" >&2
   exit 90
 fi
+ok "target is the Stokku API"
+echo "  TARGET $BASE"
 
 say "1. signup fresh shop (owner)"
 call POST /auth/signup "$(jq -nc --arg e "$EMAIL" '{email:$e,password:("Qa-'"$STAMP"'-pass"),name:"QA Owner",business_name:"QA Warung '"$STAMP"'"}')"
