@@ -451,3 +451,59 @@ change row, which no longer exists now that lines are embedded (the same gap tha
 Backend, client-side). So the server fix is merged but the browser would still show revenue with
 an empty HPP drill-down on device B. Not merged for this reason. Frontend also still owes the
 two-device browser evidence; this script is the HTTP-level equivalent and is now the gate.
+
+## Run 9 — 2026-11-25, Frontend merged; browser two-device evidence; F-15 found
+
+Merged `frontend` (c999b40, 9b6c278, 6a9fdd5, d95edd6, 3dbacd7, cc2e6c1) → main `b4709f9`.
+Reviewed the `cc2e6c1` diff first as asked: it only adds an embedded-lines block inside
+`case 'sale'` of `applyOneChange`; `postSale` is untouched, so the local-post path is unchanged.
+Lines are written inside `applyPullPage`'s single transaction before the cursor update, so
+cursor-after-commit holds.
+
+Fail-proof checked myself: with the lines block removed, `pull-sale-lines.test.ts` fails 3/3;
+restored, passes 3/3. Merged main: **64/64 tests**, tsc clean, build **150.12 KB gz**.
+
+### Browser two-device run (main-built API on :8093, fresh DB `stokku_b2`)
+
+Device A = origin `:5191`, device B = origin `:5192` (separate OPFS, so B's data can only
+arrive by pull). Fresh tenant "Warung Dua Perangkat", owner signup on A only.
+
+| | Device A (`:5191`) | Device B (`:5192`, pull only) |
+|---|---|---|
+| Item | Gula 1 kg, 20 kg | Gula 1 kg, **sisa 15 kg** (never created it) |
+| Laba rugi Nov | Pendapatan 60.000 · HPP 37.500 · laba kotor 22.500 · opex 0 · net 22.500 | **identical**, labelled "Data server" |
+| HPP drill-down | Rp37.500 | **"S000001 · 25 Nov 2026 · Rp37.500" — non-empty** |
+| Sync dot | Tersinkron | Tersinkron |
+
+Voided sale: voided on A, device B's Nota screen shows `S000001 … Rp60.000 **void**` and the
+sale is still listed (not deleted, not a tombstone). **Section C browser half: PASS.**
+
+### F-15 — BLOCKER: voiding a paid sale books the reversal as opex (server-side)
+
+Found while checking the void above. Voiding the only paid sale of the period gives:
+
+```
+GET /v1/sales            -> S000001, voided_at set, payment status "refunded"
+GET /v1/cash-entries     -> out 60000 category "penjualan" ref_type "sale_void"
+GET /v1/reports/laba-rugi -> revenue 0, hpp 0, opex 60000, net_profit -60000
+```
+
+Net profit should be **0**: revenue correctly excludes the voided sale, but `v_opex` counts the
+reversal entry as an operating expense. Cause is one line in `0009_views_qris.sql`:
+
+```sql
+and coalesce(c.ref_type, '') not in ('purchase', 'stock_move')
+```
+
+`sale_void` is a newer ref_type (Backend's void path) and is not excluded. Every voided paid sale
+therefore inflates opex and understates net profit by the sale total — the demo's most important
+number. The seeded October figures are unaffected only because the seed's voided sale was not paid.
+
+My harness missed this because B12 only asserted stock restored + voided_at; it never re-read the
+report. Now added: revenue must drop by exactly the voided sale, opex must be unchanged by the
+void, and revenue−hpp−opex must equal net. On the current build that assertion fails
+`opex expected [5000] got [65000]`.
+
+Fix belongs to DB (their view): exclude `ref_type = 'sale_void'` (and ideally also `ref_type =
+'sale'`, so a paid sale's cash_in can never be double-classified) from `v_opex`, in a new
+migration — do not edit 0009, it is checksummed on main.

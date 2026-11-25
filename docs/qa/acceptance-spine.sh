@@ -196,6 +196,10 @@ say "12. B11 opname — DEFERRED (T-124 is Sprint 2, not in this increment)"
 echo "  SKIP  opname atomic post: not implemented in increment 1"
 
 say "13. B12 void the sale -> stock restored, cash reversed, revenue drops"
+# Baseline before the void, so the assertions below are about THIS sale only
+# (this tenant also carries the B10 negative-stock sale in the same period).
+call GET "/reports/laba-rugi?from=$FROM&to=$TO" "" "$TOKEN"
+PRE_REV=$(f "$BODY" '.revenue'); PRE_OPEX=$(f "$BODY" '.opex')
 call POST "/sales/$SALE/void" "$(jq -nc '{reason:"QA void"}')" "$TOKEN"
 echo "  void $CODE $(row "$BODY" | head -c 300)"
 chk_code2 "void accepted" "$CODE"
@@ -204,6 +208,15 @@ chk_num "stock restored after void (was 15)" 20 "$(f "$BODY" '.stock')"
 call GET "/sales/$SALE" "" "$TOKEN"
 echo "  sale after void: voided_at=$(f "$BODY" '.voided_at')"
 chk "sale still exists and is marked void" "yes" "$([ -n "$(f "$BODY" '.voided_at')" ] && echo yes || echo no)"
+# F-15: voiding the only sale must leave the period at zero profit. The cash reversal
+# is booked as a cash_out with ref_type sale_void; v_opex excluded purchase and
+# stock_move but not sale_void, so it counted the reversal as an operating expense.
+call GET "/reports/laba-rugi?from=$FROM&to=$TO" "" "$TOKEN"
+VOID_REV=$(f "$BODY" '.revenue'); VOID_HPP=$(f "$BODY" '.hpp'); VOID_OPEX=$(f "$BODY" '.opex'); VOID_NET=$(f "$BODY" '.net_profit')
+echo "  after void: revenue=$VOID_REV hpp=$VOID_HPP opex=$VOID_OPEX net=$VOID_NET"
+chk_num "revenue drops by exactly the voided sale" "$(( ${PRE_REV:-0} - 60000 ))" "$VOID_REV"
+chk_num "voiding does not create opex (sale reversal is not an expense)" "$PRE_OPEX" "$VOID_OPEX"
+chk_num "revenue - hpp - opex = net after void" "$VOID_NET" "$(( ${VOID_REV:-0} - ${VOID_HPP:-0} - ${VOID_OPEX:-0} ))"
 
 say "14. B13 delete an item with movements -> 409 readable"
 call DELETE "/items/$ITEM" "" "$TOKEN"
