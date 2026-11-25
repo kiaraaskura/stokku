@@ -121,3 +121,78 @@ describe('pull applies embedded sale lines', () => {
     expect(lines[0]!.cost_at_sale).toBe(0)
   })
 })
+
+describe('a pulled voided sale renders as voided, never disappears', () => {
+  it('applies voided_at and keeps the sale with its lines', () => {
+    // first pull: normal sale with a line
+    applyPullPage(
+      db,
+      [
+        {
+          table: 'sale',
+          server_seq: 201,
+          deleted: false,
+          row: {
+            id: 'sale-void',
+            outlet_id: 'outlet-1',
+            number: 'S000003',
+            total: 20000,
+            discount: 0,
+            payment_method: 'cash',
+            paid: true,
+            mode: 'per_item',
+            business_date: '2026-11-25',
+            voided_at: null,
+            void_reason: null,
+            note: null,
+            op_id: null,
+            created_at: '2026-11-25T10:00:00Z',
+            lines: [{ id: 'line-void-1', item_id: ITEM_ID, qty: 2, unit_price: 10000, discount: 0, cost_at_sale: 6000 }],
+          },
+        },
+      ],
+      201,
+      false,
+    )
+    // later pull: the same sale arrives voided — a field update, NOT a tombstone
+    applyPullPage(
+      db,
+      [
+        {
+          table: 'sale',
+          server_seq: 202,
+          deleted: false,
+          row: {
+            id: 'sale-void',
+            outlet_id: 'outlet-1',
+            number: 'S000003',
+            total: 20000,
+            discount: 0,
+            payment_method: 'cash',
+            paid: true,
+            mode: 'per_item',
+            business_date: '2026-11-25',
+            voided_at: '2026-11-25T12:00:00Z',
+            void_reason: 'salah input',
+            note: null,
+            op_id: null,
+            created_at: '2026-11-25T10:00:00Z',
+            lines: [{ id: 'line-void-1', item_id: ITEM_ID, qty: 2, unit_price: 10000, discount: 0, cost_at_sale: 6000 }],
+          },
+        },
+      ],
+      202,
+      false,
+    )
+    const sale = db.get<{ voided_at: string | null; void_reason: string | null }>(
+      'SELECT voided_at, void_reason FROM sale WHERE id = ?',
+      ['sale-void'],
+    )
+    expect(sale).not.toBeNull() // still present, not deleted
+    expect(sale!.voided_at).toBe('2026-11-25T12:00:00Z')
+    expect(sale!.void_reason).toBe('salah input')
+    // lines still intact
+    const lines = db.all<{ id: string }>('SELECT id FROM sale_line WHERE sale_id = ?', ['sale-void'])
+    expect(lines.length).toBe(1)
+  })
+})
