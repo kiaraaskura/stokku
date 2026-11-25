@@ -22,6 +22,7 @@ struct Totals {
     hpp: i64,
     unpaid_revenue: i64,
     opex: i64,
+    qris_mdr_fee: i64,
 }
 
 impl Totals {
@@ -62,6 +63,22 @@ async fn totals_for(
     .fetch_one(&mut *tx)
     .await?;
 
+    // QRIS MDR fee, shown separately from gross revenue (D20):
+    // paid payments on non-voided sales in the window
+    let qris_mdr_fee: i64 = sqlx::query_scalar(
+        "select coalesce(sum(p.mdr_amount), 0)::bigint
+         from payment p
+         join sale s on s.id = p.sale_id
+         where p.status = 'paid'
+           and p.mdr_amount > 0
+           and s.voided_at is null
+           and s.business_date between $1 and $2",
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_one(&mut *tx)
+    .await?;
+
     // opex: cash out, excluding stock purchases ('pembelian_stok', 'modal',
     // purchase-linked) — "stok bukan beban"
     let opex: i64 = sqlx::query_scalar(
@@ -82,6 +99,7 @@ async fn totals_for(
         hpp,
         unpaid_revenue: unpaid,
         opex,
+        qris_mdr_fee,
     })
 }
 
@@ -109,6 +127,7 @@ fn totals_json(t: &Totals) -> Value {
         "opex": t.opex,
         "net_profit": t.net_profit(),
         "unpaid_revenue": t.unpaid_revenue,
+        "qris_mdr_fee": t.qris_mdr_fee,
     })
 }
 
@@ -145,6 +164,7 @@ pub async fn laba_rugi(
             { "key": "opex", "label": "Beban operasional", "amount": t.opex, "drill": "opex" },
             { "key": "net_profit", "label": "Laba bersih", "amount": t.net_profit() },
             { "key": "unpaid_revenue", "label": "Pendapatan belum dibayar", "amount": t.unpaid_revenue },
+            { "key": "qris_mdr_fee", "label": "Biaya MDR QRIS (dipisah dari pendapatan kotor)", "amount": t.qris_mdr_fee },
         ],
     });
     let base = totals_json(&t);
@@ -166,6 +186,7 @@ pub async fn laba_rugi(
             "opex": cmp.opex,
             "net_profit": cmp.net_profit(),
             "unpaid_revenue": cmp.unpaid_revenue,
+            "qris_mdr_fee": cmp.qris_mdr_fee,
         });
     }
 

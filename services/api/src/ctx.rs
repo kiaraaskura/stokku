@@ -96,6 +96,18 @@ impl AuthCtx {
         }
     }
 
+    /// Owner-only endpoints (e.g. outlet QRIS settings) without inventing
+    /// a new capability name outside the frozen matrix.
+    pub fn require_owner(&self) -> Result<(), ApiError> {
+        if self.role == Role::Owner {
+            Ok(())
+        } else {
+            Err(ApiError::Forbidden(
+                "Hanya pemilik toko yang boleh mengubah pengaturan ini".into(),
+            ))
+        }
+    }
+
     pub fn can_read_cost(&self) -> bool {
         Cap::CostRead.allowed(self.role)
     }
