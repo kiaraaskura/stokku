@@ -51,20 +51,20 @@ export function Cart() {
     }
     let cancelled = false
     const timer = setTimeout(() => {
-      const local = () => repo.call('searchItems', q)
-      const finish = (wire: Item[] | { id: string; sku: string | null; name: string; base_unit: string; sale_price: number; cost_avg?: number; min_stock: number; stock: number; active: boolean; updated_at?: string }[]) => {
-        if (!cancelled) setResults(apiMode ? wire.map((r) => wireItemToLocal(r as never)) : (wire as Item[]))
+      // Local rows are already the UI shape; API rows map through wireItemToLocal.
+      const showItems = (items: Item[]) => {
+        if (!cancelled) setResults(items)
       }
       if (online && apiMode) {
         api
           .searchItems(q)
           .then(async (rows) => {
             await repo.call('applyServerItems', rows)
-            finish(rows as never)
+            showItems(rows.map(wireItemToLocal))
           })
-          .catch(() => void local().then(finish))
+          .catch(() => void repo.call('searchItems', q).then(showItems))
       } else {
-        void local().then(finish)
+        void repo.call('searchItems', q).then(showItems)
       }
     }, 100)
     return () => {
@@ -138,13 +138,12 @@ export function Cart() {
           }),
         onRemoteSuccess: async (sale) => {
           await repo.call('applyServerSale', sale)
+          // Item stock/cost refresh runs in the background so checkout does not wait on it.
           for (const l of lines) {
-            try {
-              const fresh = await api.getItem(l.item.id)
-              await repo.call('applyServerItems', [fresh])
-            } catch {
-              // read path refreshes on next screen load
-            }
+            void api
+              .getItem(l.item.id)
+              .then((fresh) => repo.call('applyServerItems', [fresh]))
+              .catch(() => undefined)
           }
         },
         local: () =>

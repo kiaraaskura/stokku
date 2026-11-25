@@ -230,6 +230,7 @@ export interface ApiQrisConfirm {
 
 export interface ApiStockReportItem {
   item_id?: string
+  item_name?: string
   name?: string
   qty?: number
   min_stock?: number
@@ -238,14 +239,20 @@ export interface ApiStockReportItem {
   value_at_cost?: number
   value_at_sale?: number
   last_movement_date?: string
+  low_stock?: boolean
+  negative_stock?: boolean
+  dead_stock?: boolean
   [k: string]: unknown
 }
 
 export interface ApiStockReport {
   at_cost: number
   at_sale: number
+  data: ApiStockReportItem[]
   low_stock: ApiStockReportItem[]
   dead_stock: ApiStockReportItem[]
+  low_stock_count?: number
+  dead_stock_count?: number
   [k: string]: unknown
 }
 
@@ -272,9 +279,12 @@ export interface ApiDashboard {
 }
 
 export interface ApiOpnameLine {
+  id?: string
   item_id: string
+  item_name?: string
   system_qty: number
   counted_qty: number | null
+  current_qty?: number
   [k: string]: unknown
 }
 

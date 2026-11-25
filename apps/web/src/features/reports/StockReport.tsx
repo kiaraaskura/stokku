@@ -53,8 +53,8 @@ export function StockReport(): React.ReactNode {
     )
   }
 
-  const rowName = (r: { item_id?: string; name?: string }): string =>
-    r.name ?? r.item_id?.slice(0, 8) ?? '?'
+  const rowName = (r: { item_id?: string; item_name?: string; name?: string }): string =>
+    r.item_name ?? r.name ?? r.item_id?.slice(0, 8) ?? '?'
 
   return (
     <div className="screen">
@@ -82,6 +82,37 @@ export function StockReport(): React.ReactNode {
               <span className="num">{formatIDR(report.at_sale ?? 0)}</span>
             </div>
           </div>
+
+          <h2 style={{ margin: 0, fontSize: 'var(--text-lg)' }}>
+            {t('stockReport.allItems')} ({report.data?.length ?? 0})
+          </h2>
+          {(report.data?.length ?? 0) === 0 ? (
+            <Empty icon="📦">{t('common.emptyList')}</Empty>
+          ) : (
+            <div className="card-list">
+              {report.data.map((r) => (
+                <div key={r.item_id ?? rowName(r)} className="card-row" style={{ cursor: 'default' }}>
+                  <div className="card-row__main">
+                    <span className="card-row__title">{rowName(r)}</span>
+                    <span className="card-row__sub">
+                      {t('opname.system')}: {formatQty(Math.round((r.qty ?? 0) * 1000))} ·{' '}
+                      {r.last_movement_date ? formatDate(r.last_movement_date, locale) : t('stockReport.neverMoved')}
+                    </span>
+                  </div>
+                  <div className="card-row__end">
+                    <span className="num">{formatIDR(r.value_at_cost ?? 0)}</span>
+                    {(r.qty ?? 0) < 0 ? (
+                      <Badge tone="danger">{t('items.outOfStock')}</Badge>
+                    ) : r.low_stock ? (
+                      <Badge tone="warning">{t('items.lowStock')}</Badge>
+                    ) : r.dead_stock ? (
+                      <Badge tone="neutral">{t('stockReport.deadStock')}</Badge>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           <h2 style={{ margin: 0, fontSize: 'var(--text-lg)' }}>
             {t('stockReport.lowStock')} ({report.low_stock?.length ?? 0})

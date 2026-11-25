@@ -19,6 +19,7 @@ import { OpnameScreen } from './features/opname/OpnameScreen'
 import { QrScreen } from './features/qris/QrScreen'
 import { QrisSettings } from './features/qris/QrisSettings'
 import { DevRoute } from './dev/DevRoute'
+import { CrashBoundary } from './components/CrashBoundary'
 
 const LANG_KEY = 'stokku.lang'
 const savedLang = typeof localStorage !== 'undefined' ? localStorage.getItem(LANG_KEY) : null
@@ -39,6 +40,7 @@ export function App(): React.ReactNode {
       <AuthProvider>
         <AppStateProvider>
           <BrowserRouter>
+            <CrashBoundary>
             <Routes>
               <Route path="/login" element={<LoginScreen />} />
               <Route path="/onboarding" element={<OnboardingRoute />} />
@@ -62,6 +64,7 @@ export function App(): React.ReactNode {
               </Route>
               <Route path="/qris/:saleId" element={<QrScreen />} />
             </Routes>
+            </CrashBoundary>
           </BrowserRouter>
         </AppStateProvider>
       </AuthProvider>

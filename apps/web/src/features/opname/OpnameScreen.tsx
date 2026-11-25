@@ -79,7 +79,7 @@ export function OpnameScreen(): React.ReactNode {
     setSession(s)
     const newRows: CountRow[] = (s.lines ?? []).map((l) => ({
       itemId: l.item_id,
-      name: itemsRef.current.get(l.item_id)?.name ?? '…',
+      name: l.item_name ?? itemsRef.current.get(l.item_id)?.name ?? '…',
       systemQty: Number(l.system_qty ?? 0),
       counted: counts?.[l.item_id] ?? (l.counted_qty !== null && l.counted_qty !== undefined ? Number(l.counted_qty) : null),
     }))

@@ -28,6 +28,7 @@ export function QrisSettings(): React.ReactNode {
   const [error, setError] = useState<string | null>(null)
   const [crcError, setCrcError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const loadedRef = useRef(false)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -42,17 +43,19 @@ export function QrisSettings(): React.ReactNode {
       if (online && apiMode) {
         try {
           const fresh = await api.getQrisSettings(outlet.id)
+          // Do not clobber edits the user is already making.
+          if (!loadedRef.current) apply(fresh)
           await repo?.call('setServerCache', `qris:${outlet.id}`, fresh)
-          apply(fresh)
         } catch {
           // cache (if any) stays
         }
       }
+      loadedRef.current = true
       setLoading(false)
     }
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outlet?.id, online, apiMode])
+  }, [outlet?.id])
 
   const apply = (s: ApiQrisSettings | null) => {
     if (!s) return
