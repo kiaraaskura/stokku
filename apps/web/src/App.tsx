@@ -15,6 +15,7 @@ import { ReportsHub } from './features/reports/ReportsHub'
 import { StockReport } from './features/reports/StockReport'
 import { SalesReport } from './features/reports/SalesReport'
 import { Dashboard } from './features/reports/Dashboard'
+import { ExportScreen } from './features/reports/ExportScreen'
 import { OpnameScreen } from './features/opname/OpnameScreen'
 import { QrScreen } from './features/qris/QrScreen'
 import { QrisSettings } from './features/qris/QrisSettings'
@@ -58,6 +59,7 @@ export function App(): React.ReactNode {
                 <Route path="laporan/stok" element={<StockReport />} />
                 <Route path="laporan/penjualan" element={<SalesReport />} />
                 <Route path="laporan/ringkasan" element={<Dashboard />} />
+                <Route path="laporan/unduh" element={<ExportScreen />} />
                 <Route path="opname" element={<OpnameScreen />} />
                 <Route path="qris-settings" element={<QrisSettings />} />
                 <Route path="perlu-dicek" element={<InboxScreen />} />

@@ -15,6 +15,8 @@ export function ReportsHub(): ReactNode {
     { to: '/laporan/stok', icon: '📦', title: t('stockReport.title'), sub: t('stockReport.subtitle') },
     { to: '/laporan/penjualan', icon: '🧾', title: t('salesReport.title'), sub: t('salesReport.subtitle') },
     { to: '/laporan/ringkasan', icon: '🏠', title: t('dashboard.title'), sub: t('dashboard.subtitle') },
+    // owner-only export section (F25); staff never see the card
+    { to: '/laporan/unduh', icon: '⬇️', title: t('export.title'), sub: t('export.subtitle') },
   ]
 
   return (
