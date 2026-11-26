@@ -28,6 +28,21 @@ impl ApiError {
         }
     }
 
+    /// The human message, for callers that collect per-row errors (bulk
+    /// import) instead of returning one HTTP response.
+    pub fn message(&self) -> String {
+        match self {
+            ApiError::Unauthorized(m)
+            | ApiError::Forbidden(m)
+            | ApiError::NotFound(m)
+            | ApiError::Conflict(m)
+            | ApiError::PeriodClosed(m)
+            | ApiError::Internal(m) => m.clone(),
+            ApiError::Validation { message, .. } => message.clone(),
+            ApiError::RateLimited => "Terlalu banyak percobaan".into(),
+        }
+    }
+
     pub fn validation_field(message: impl Into<String>, field: &str, detail: &str) -> Self {
         let mut fields = Map::new();
         fields.insert(field.to_string(), json!(detail));
