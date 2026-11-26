@@ -16,6 +16,7 @@ use std::task::Poll;
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use futures_core::Stream;
+use futures_util::TryStreamExt;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use sqlx::{PgConnection, PgPool, Row};
@@ -662,13 +663,17 @@ fn crc32_table() -> [u32; 256] {
     table
 }
 
-fn crc32(data: &[u8]) -> u32 {
+fn crc32_update(crc: u32, data: &[u8]) -> u32 {
     let table = crc32_table();
-    let mut crc = 0xFFFF_FFFFu32;
+    let mut crc = crc;
     for &b in data {
         crc = table[((crc ^ u32::from(b)) & 0xFF) as usize] ^ (crc >> 8);
     }
-    crc ^ 0xFFFF_FFFF
+    crc
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    crc32_update(0xFFFF_FFFFu32, data) ^ 0xFFFF_FFFF
 }
 
 fn dos_datetime(t: DateTime<Utc>) -> (u16, u16) {
@@ -680,6 +685,10 @@ fn dos_datetime(t: DateTime<Utc>) -> (u16, u16) {
 
 struct ZipEntry {
     name: String,
+    // A streamed entry's CRC and size are not known until its body is written,
+    // so they are back-patched at these offsets in the local header.
+    crc_offset: u64,
+    size_offset: u64,
     crc: u32,
     size: u32,
     offset: u32,
@@ -729,17 +738,44 @@ fn zip_central_dir(entries: &[ZipEntry]) -> Vec<u8> {
     out
 }
 
-fn zip_end(entries: &[ZipEntry], cd_size: u32) -> Vec<u8> {
+fn zip_end(entries: &[ZipEntry], cd_size: u64) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&0x06054b50u32.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes()); // disk
     out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
     out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
     out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
-    out.extend_from_slice(&cd_size.to_le_bytes());
+    out.extend_from_slice(&(cd_size as u32).to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes()); // cd offset filled by caller ordering
     out.extend_from_slice(&0u16.to_le_bytes()); // comment len
     out
+}
+
+/// Write a STORED entry whose body the caller streams into `zip` itself, so a
+/// table far larger than memory (full_data.json) is never held twice. CRC and
+/// size go into the local header afterwards, in place.
+fn zip_open_streamed(zip: &mut Vec<u8>, entries: &mut Vec<ZipEntry>, name: &str) {
+    let offset = zip.len() as u64;
+    zip.extend_from_slice(&zip_local_header(name, &[]));
+    entries.push(ZipEntry {
+        name: name.to_string(),
+        crc_offset: offset + 14,
+        size_offset: offset + 18,
+        crc: 0,
+        size: 0,
+        offset: offset as u32,
+    });
+}
+
+fn zip_seal_streamed(zip: &mut [u8], entries: &mut [ZipEntry], crc: u32, size: u64) {
+    if let Some(e) = entries.last_mut() {
+        let (c, s) = (e.crc_offset as usize, e.size_offset as usize);
+        zip[c..c + 4].copy_from_slice(&crc.to_le_bytes());
+        zip[s..s + 4].copy_from_slice(&(size as u32).to_le_bytes());
+        zip[s + 4..s + 8].copy_from_slice(&(size as u32).to_le_bytes());
+        e.crc = crc;
+        e.size = size as u32;
+    }
 }
 
 /// Read a whole table as JSON rows through RLS (archive payload).
@@ -756,10 +792,12 @@ async fn table_csv(
     header: Vec<u8>,
     row_to_line: impl Fn(&sqlx::postgres::PgRow) -> Result<Vec<u8>, sqlx::Error>,
 ) -> Result<Vec<u8>, sqlx::Error> {
-    let rows = sqlx::query(sql).fetch_all(conn).await?;
+    // fetch() streams the rows instead of closing the cursor after headers, so
+    // a large table is not read twice.
+    let mut rows = sqlx::query(sql).fetch(conn);
     let mut out = header;
-    for r in &rows {
-        out.extend(row_to_line(r)?);
+    while let Some(r) = rows.try_next().await? {
+        out.extend(row_to_line(&r)?);
     }
     Ok(out)
 }
@@ -827,19 +865,49 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
             "audit_log",
             "change_log",
         ];
-        let mut data_json = serde_json::Map::new();
-        for t in tables {
-            match table_json(&mut tx_db, t).await {
-                Ok(rows) => {
-                    counts.push((t.to_string(), rows.len() as i64));
-                    data_json.insert(t.to_string(), Value::Array(rows));
-                }
+        // full_data.json is streamed table by table, never as one whole-database
+        // Value, so a large account does not have to fit in memory twice.
+        let mut body: Vec<u8> = Vec::new();
+        let mut crc = 0xFFFF_FFFFu32;
+        let push = |body: &mut Vec<u8>, crc: &mut u32, bytes: &[u8]| {
+            body.extend_from_slice(bytes);
+            *crc = crc32_update(*crc, bytes);
+        };
+        push(&mut body, &mut crc, b"{");
+        for (i, t) in tables.iter().enumerate() {
+            let rows = match table_json(&mut tx_db, t).await {
+                Ok(rows) => rows,
                 Err(e) => {
+                    // A missing table must never yield an archive that
+                    // silently lacks it: fail the whole export.
                     let _ = tx.send(Err(format!("{t}: {e:#}"))).await;
                     return;
                 }
+            };
+            counts.push((t.to_string(), rows.len() as i64));
+            if i > 0 {
+                push(&mut body, &mut crc, b",");
             }
+            push(&mut body, &mut crc, format!("\"{t}\":[").as_bytes());
+            for (j, row) in rows.iter().enumerate() {
+                if j > 0 {
+                    push(&mut body, &mut crc, b",");
+                }
+                match serde_json::to_vec(row) {
+                    Ok(bytes) => push(&mut body, &mut crc, &bytes),
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("{t}: {e:#}"))).await;
+                        return;
+                    }
+                }
+            }
+            push(&mut body, &mut crc, b"]");
+            drop(rows);
         }
+        push(&mut body, &mut crc, b"}");
+        let data_body = std::mem::take(&mut body);
+        let data_crc = crc ^ 0xFFFF_FFFFu32;
+        let data_size = data_body.len() as u64;
 
         let mut counts_json = serde_json::Map::new();
         for (t, n) in &counts {
@@ -862,32 +930,32 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
             "note": "angka: rupiah integer; qty 3 desimal; tanggal ISO-8601",
         });
 
-        let mut add = |name: &str, data: Vec<u8>| {
+        let add = |zip: &mut Vec<u8>, entries: &mut Vec<ZipEntry>, name: &str, data: &[u8]| {
             let offset = zip.len() as u32;
-            zip.extend_from_slice(&zip_local_header(name, &data));
-            zip.extend_from_slice(&data);
+            zip.extend_from_slice(&zip_local_header(name, data));
+            zip.extend_from_slice(data);
             entries.push(ZipEntry {
                 name: name.to_string(),
-                crc: crc32(&data),
+                crc_offset: 0,
+                size_offset: 0,
+                crc: crc32(data),
                 size: data.len() as u32,
                 offset,
             });
         };
 
-        add(
-            "manifest.json",
-            serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-        );
-        add(
-            "full_data.json",
-            serde_json::to_vec_pretty(&Value::Object(data_json)).unwrap_or_default(),
-        );
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap_or_default();
+        add(&mut zip, &mut entries, "manifest.json", &manifest_bytes);
+        zip_open_streamed(&mut zip, &mut entries, "full_data.json");
+        zip.extend_from_slice(&data_body);
+        drop(data_body);
+        zip_seal_streamed(&mut zip, &mut entries, data_crc, data_size);
 
         // ---- CSVs ----
-        if let Ok(csv) = table_csv(
+        match table_csv(
             &mut tx_db,
             "select sku, name, base_unit, sale_price, cost_avg, min_stock, active, deleted_at,
-                    updated_at from item order by name",
+                updated_at from item order by name",
             csv_row(&[
                 "sku".into(),
                 "nama".into(),
@@ -916,9 +984,14 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
         )
         .await
         {
-            add("items.csv", csv);
+            Ok(csv) => add(&mut zip, &mut entries, "items.csv", &csv),
+            Err(e) => {
+                let _ = tx.send(Err(format!("items.csv: {e:#}"))).await;
+                return;
+            }
         }
-        if let Ok(csv) = table_csv(
+
+        match table_csv(
             &mut tx_db,
             "select outlet_id, item_id, qty from stock_level order by item_id",
             csv_row(&["outlet_id".into(), "item_id".into(), "qty".into()]),
@@ -933,12 +1006,17 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
         )
         .await
         {
-            add("stock_levels.csv", csv);
+            Ok(csv) => add(&mut zip, &mut entries, "stock_levels.csv", &csv),
+            Err(e) => {
+                let _ = tx.send(Err(format!("stock_levels.csv: {e:#}"))).await;
+                return;
+            }
         }
-        if let Ok(csv) = table_csv(
+
+        match table_csv(
             &mut tx_db,
             "select business_date, type, qty, unit_cost, ref_type, ref_id, note, created_at
-             from stock_move order by business_date, id",
+         from stock_move order by business_date, id",
             csv_row(&[
                 "tanggal".into(),
                 "tipe".into(),
@@ -965,15 +1043,20 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
         )
         .await
         {
-            add("stock_moves.csv", csv);
+            Ok(csv) => add(&mut zip, &mut entries, "stock_moves.csv", &csv),
+            Err(e) => {
+                let _ = tx.send(Err(format!("stock_moves.csv: {e:#}"))).await;
+                return;
+            }
         }
-        if let Ok(csv) = table_csv(
+
+        match table_csv(
             &mut tx_db,
             "select s.number, s.business_date, s.payment_method, s.paid, s.mode, s.total,
-                    s.discount, s.note, s.voided_at, s.void_reason,
-                    l.item_id, l.qty, l.unit_price, l.discount as line_discount, l.cost_at_sale
-             from sale s join sale_line l on l.sale_id = s.id
-             order by s.business_date, s.id, l.id",
+                s.discount, s.note, s.voided_at, s.void_reason,
+                l.item_id, l.qty, l.unit_price, l.discount as line_discount, l.cost_at_sale
+         from sale s join sale_line l on l.sale_id = s.id
+         order by s.business_date, s.id, l.id",
             csv_row(&[
                 "nomor".into(),
                 "tanggal".into(),
@@ -1014,12 +1097,17 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
         )
         .await
         {
-            add("sales_with_lines.csv", csv);
+            Ok(csv) => add(&mut zip, &mut entries, "sales_with_lines.csv", &csv),
+            Err(e) => {
+                let _ = tx.send(Err(format!("sales_with_lines.csv: {e:#}"))).await;
+                return;
+            }
         }
-        if let Ok(csv) = table_csv(
+
+        match table_csv(
             &mut tx_db,
             "select business_date, direction, category, method, amount, ref_type, ref_id, note
-             from cash_entry order by business_date, id",
+         from cash_entry order by business_date, id",
             csv_row(&[
                 "tanggal".into(),
                 "arah".into(),
@@ -1045,9 +1133,14 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
         )
         .await
         {
-            add("cash_entries.csv", csv);
+            Ok(csv) => add(&mut zip, &mut entries, "cash_entries.csv", &csv),
+            Err(e) => {
+                let _ = tx.send(Err(format!("cash_entries.csv: {e:#}"))).await;
+                return;
+            }
         }
-        if let Ok(csv) = table_csv(
+
+        match table_csv(
             &mut tx_db,
             "select type, name, phone from contact order by name",
             csv_row(&["tipe".into(), "nama".into(), "telepon".into()]),
@@ -1061,13 +1154,18 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
         )
         .await
         {
-            add("contacts.csv", csv);
+            Ok(csv) => add(&mut zip, &mut entries, "contacts.csv", &csv),
+            Err(e) => {
+                let _ = tx.send(Err(format!("contacts.csv: {e:#}"))).await;
+                return;
+            }
         }
+
         // laba rugi, all months
-        let lr = table_csv(
+        match table_csv(
             &mut tx_db,
             "select period, revenue, hpp, gross_profit, opex, net_profit, unpaid_revenue
-             from v_laba_rugi order by period",
+         from v_laba_rugi order by period",
             csv_row(&[
                 "periode".into(),
                 "pendapatan".into(),
@@ -1089,15 +1187,19 @@ pub async fn account_zip(State(st): State<AppState>, ctx: AuthCtx) -> ApiResult<
                 ]))
             },
         )
-        .await;
-        if let Ok(csv) = lr {
-            add("laba_rugi_all_time.csv", csv);
+        .await
+        {
+            Ok(csv) => add(&mut zip, &mut entries, "laba_rugi_all_time.csv", &csv),
+            Err(e) => {
+                let _ = tx.send(Err(format!("laba_rugi_all_time.csv: {e:#}"))).await;
+                return;
+            }
         }
 
         // central directory + end record
         let cd_offset = zip.len() as u32;
         let cd = zip_central_dir(&entries);
-        let cd_size = cd.len() as u32;
+        let cd_size = cd.len() as u64;
         zip.extend_from_slice(&cd);
         let mut end = zip_end(&entries, cd_size);
         let end_len = end.len();
