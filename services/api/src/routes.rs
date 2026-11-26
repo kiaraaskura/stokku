@@ -4,6 +4,7 @@ pub mod contacts;
 pub mod exports;
 pub mod imports;
 pub mod items;
+pub mod members;
 pub mod opname;
 pub mod qris;
 pub mod reports;
@@ -43,6 +44,20 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/refresh", post(auth::refresh))
         .route("/v1/auth/logout", post(auth::logout))
         .route("/v1/me", get(auth::me))
+        .route("/v1/auth/accept-invite", post(members::accept_invite))
+        .route("/v1/members", get(members::list_members))
+        .route(
+            "/v1/members/{user_id}",
+            axum::routing::delete(members::remove_member),
+        )
+        .route(
+            "/v1/members/invites",
+            get(members::list_invites).post(members::create_invite),
+        )
+        .route(
+            "/v1/members/invites/{id}",
+            axum::routing::delete(members::revoke_invite),
+        )
         .route("/v1/items", get(items::list).post(items::create))
         .route("/v1/items/search", get(items::search))
         .route("/v1/items/import", post(imports::import_items))
