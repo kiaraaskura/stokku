@@ -135,6 +135,55 @@ Laba rugi definition is fixed: `revenue − hpp − opex = net_profit`; stock pu
 
 `from`/`to` default to 1 January of the current year through today (Asia/Jakarta). CSV is deliberately spreadsheet-safe for an Indonesian locale: header row, integer rupiah without thousand separators, qty fixed to 3 decimals, ISO-8601 dates, CRLF, minimal quoting. Exports stream; a 50k-row ledger must finish under 60 s. Every path is `Cap::Export`, so a staff token gets `403` on all of them, and every query runs under the caller's RLS context.
 
+## Bulk import and reconcile
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/items/import?dry_run=true` | CSV body (text/csv or plain text). Header, case-insensitive, any order: `name, sku, base_unit, sale_price, cost, min_stock, barcode`. Only `name`, `base_unit`, `sale_price` are required. Returns `{dry_run, valid, failed, total_rows, errors:[{row,error}]}`. `row` is the 1-based file line, header = 1. Quoted fields with `""` escapes and a comma inside a name are handled. Max 5.000 rows per file. A bad row is reported and skipped; it never aborts its neighbours. `dry_run=true` writes nothing. |
+| GET | `/reports/reconcile?outlet_id=` | owner only. `{checked, ok, mismatches:[{item_id,name,sku,stock_level,ledger_sum,difference}]}` comparing `stock_level` against `sum(stock_move.qty)`. Read-only: a mismatch is reported for a human, never auto-repaired. |
+
+## Members and invites (T-140)
+
+The owner invites by email; the API returns a one-time code (24 random bytes, hex)
+that the owner shares over WhatsApp or in person. No mail is sent. Only the SHA-256
+of the code is stored, the code is single use and expires in 7 days, and the role is
+always `staff` — an invite can never mint a second owner.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/members` | owner only: `{items:[{user_id,name,email,role,since}]}` |
+| POST | `/members/invites` | `{email}`; 409 if that email is already a member; replaces any open invite for the same address; returns `{id,email,role,code,expires_at,shop,note}` — the code appears once |
+| GET | `/members/invites` | open invites, never the code |
+| DELETE | `/members/invites/{id}` | revoke; the code stops working immediately |
+| DELETE | `/members/{user_id}` | 409 for yourself and for the last owner; removes the membership only, the `user_app` row stays so history keeps the name |
+| POST | `/auth/accept-invite` | public: `{code,password,name?}`; 401 if the email already has an account and the password is wrong; 422 for a used or expired code; returns `{accepted,tenant_id,shop,role,email,name,next}` — then log in normally |
+
+## Contacts, payables and receivables (T-133)
+
+Contacts are operational, so both owner and staff may read and write them. Payables
+and receivables are money, so writing one uses `Cap::CashWrite` like the cash book.
+Every payment against a bill posts a `cash_entry` in the same transaction — the cash
+book stays the only record of money movement.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/contacts?type=customer\|supplier&q=` | `{items:[{id,type,name,phone,created_at}]}`; `q` matches name or phone |
+| POST | `/contacts` | `{type,name,phone?}`; 422 on an unknown type or empty name |
+| PATCH | `/contacts/{id}` | `{name?,phone?}`; type is immutable once set |
+| DELETE | `/contacts/{id}` | 409 once the contact is on a sale, payable or receivable — history never dangles |
+| GET | `/payables?contact_id=&open=true` | `{items:[…,outstanding], outstanding_total}`; `open=true` hides settled bills |
+| POST | `/payables` | `{contact_id,amount,due_date?}`; contact must be a supplier; `amount` is integer rupiah > 0 |
+| POST | `/payables/{id}/payments` | `{amount,business_date?,method?,category?,outlet_id?,note?,op_id?}`; posts a `cash_entry` `out`, `ref_type="payable_payment"`, `ref_id`=bill id. Overpayment is refused with 422 and the exact remainder — never clamped. Returns `{bill, cash_entry_id, settled}` |
+| GET | `/receivables?contact_id=&open=true` | same shape as `/payables` |
+| POST | `/receivables` | `{contact_id,amount,due_date?,sale_id?}`; contact must be a customer |
+| POST | `/receivables/{id}/payments` | posts a `cash_entry` `in`, `ref_type="receivable_payment"`. Returns `{bill, cash_entry_id, settled}` |
+
+A payable payment defaults to category `pembelian_stok`, which the opex rule already
+excludes ("stok bukan beban"), so settling a supplier debt is not booked as a second
+expense. A receivable payment is money in against revenue already recognised at the
+sale, so it adds no revenue. Payers pick another category when the debt is operating
+(e.g. `sewa`), and then it does count as opex — once.
+
 ## Opname
 
 | Method | Path | Notes |

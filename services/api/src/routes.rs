@@ -1,7 +1,10 @@
 pub mod cash;
 pub mod categories;
+pub mod contacts;
 pub mod exports;
+pub mod imports;
 pub mod items;
+pub mod members;
 pub mod opname;
 pub mod qris;
 pub mod reports;
@@ -41,8 +44,23 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/refresh", post(auth::refresh))
         .route("/v1/auth/logout", post(auth::logout))
         .route("/v1/me", get(auth::me))
+        .route("/v1/auth/accept-invite", post(members::accept_invite))
+        .route("/v1/members", get(members::list_members))
+        .route(
+            "/v1/members/{user_id}",
+            axum::routing::delete(members::remove_member),
+        )
+        .route(
+            "/v1/members/invites",
+            get(members::list_invites).post(members::create_invite),
+        )
+        .route(
+            "/v1/members/invites/{id}",
+            axum::routing::delete(members::revoke_invite),
+        )
         .route("/v1/items", get(items::list).post(items::create))
         .route("/v1/items/search", get(items::search))
+        .route("/v1/items/import", post(imports::import_items))
         .route(
             "/v1/items/{id}",
             get(items::get_one)
@@ -66,6 +84,24 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/cash-entries", get(cash::list).post(cash::create))
         .route("/v1/cash-entries/{id}", delete(cash::reversal_delete))
         .route("/v1/cash-categories", get(cash::categories))
+        .route("/v1/contacts", get(contacts::list).post(contacts::create))
+        .route(
+            "/v1/contacts/{id}",
+            axum::routing::patch(contacts::update).delete(contacts::remove),
+        )
+        .route(
+            "/v1/payables",
+            get(contacts::list_payables).post(contacts::create_payable),
+        )
+        .route("/v1/payables/{id}/payments", post(contacts::pay_payable))
+        .route(
+            "/v1/receivables",
+            get(contacts::list_receivables).post(contacts::create_receivable),
+        )
+        .route(
+            "/v1/receivables/{id}/payments",
+            post(contacts::pay_receivable),
+        )
         .route("/v1/sales", get(sales::list).post(sales::create))
         .route("/v1/sales/{id}", get(sales::get_one))
         .route("/v1/sales/{id}/void", post(sales::void))
@@ -96,5 +132,6 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/reports/dashboard", get(reports::dashboard))
         .route("/v1/reports/laba-rugi", get(reports::laba_rugi))
         .route("/v1/reports/laba-rugi/drill", get(reports::drill))
+        .route("/v1/reports/reconcile", get(imports::reconcile))
         .with_state(state)
 }
