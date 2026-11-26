@@ -100,7 +100,20 @@ export async function runSync(repo: Repository, api: ApiClient, online: boolean)
           await repo.call('clearOutboxOp', r.op_id)
           result.rejected += 1
         } else {
-          // applied or duplicate: either way the op is settled server-side
+          // applied or duplicate: either way the op is settled server-side.
+          // The server assigns its OWN row ids (create payloads never carry the
+          // local row id), so the pull will bring the server row under a new id.
+          // Remove the local optimistic row now or the store would hold both
+          // and double-count offline views (sales list, local laba rugi).
+          const localId = typeof op?.payload?.['local_id'] === 'string' ? (op.payload['local_id'] as string) : null
+          if (localId && r.status === 'applied') {
+            if (op?.type === 'sale.create') await repo.call('deleteLocalSale', localId)
+            else if (op?.type === 'cash_entry.create') await repo.call('deleteCashEntryRow', localId)
+            else if (op?.type === 'stock_move.create') await repo.call('deleteStockMoveRow', localId)
+            // item.create cannot be resolved here: the push result carries no
+            // server row id, so the local item stays until a contract-level
+            // id mapping exists (see the channel report).
+          }
           if (op?.type === 'item.update' && op?.payload) {
             const p = op.payload
             ownEchoSignatures.push(
