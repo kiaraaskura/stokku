@@ -69,6 +69,37 @@ pub async fn create(
     Json(body): Json<SaleReq>,
 ) -> ApiResult<Json<Value>> {
     ctx.require(Cap::SalesWrite)?;
+    let mut tx = begin_tx(&st.pool, &ctx).await?;
+    if let Some(op_id) = body.op_id {
+        let dup: Option<Value> = sqlx::query_scalar("select result from op_log where op_id = $1")
+            .bind(op_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some(r) = dup {
+            return Ok(Json(
+                json!({ "duplicate": true, "op_id": op_id, "result": r }),
+            ));
+        }
+    }
+    let v = apply_sale(&mut tx, &ctx, &body).await?;
+    if let Some(op_id) = body.op_id {
+        let row_id: Uuid = serde_json::from_value(v["id"].clone()).unwrap_or(op_id);
+        sqlx::query(
+            "insert into op_log (op_id, tenant_id, result) values ($1, current_setting('app.tenant_id')::uuid, $2)",
+        )
+        .bind(op_id)
+        .bind(json!({ "status": "applied", "endpoint": "sale.create", "row_id": row_id }))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(v))
+}
+
+/// The single sale-posting path (sale + lines + stock moves + cash +
+/// receivable), shared by REST and sync push.
+pub async fn apply_sale(tx: &mut PgConnection, ctx: &AuthCtx, body: &SaleReq) -> ApiResult<Value> {
+    ctx.require(Cap::SalesWrite)?;
 
     if body.lines.is_empty() {
         return Err(ApiError::validation_field(
@@ -152,21 +183,9 @@ pub async fn create(
     // stable lock order to avoid deadlocks
     plans.sort_by_key(|p| p.item_id);
 
-    let mut tx = begin_tx(&st.pool, &ctx).await?;
-    if let Some(op_id) = body.op_id {
-        let dup: Option<Value> = sqlx::query_scalar("select result from op_log where op_id = $1")
-            .bind(op_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-        if let Some(r) = dup {
-            return Ok(Json(
-                json!({ "duplicate": true, "op_id": op_id, "result": r }),
-            ));
-        }
-    }
     let outlet_id = match body.outlet_id {
         Some(o) => o,
-        None => crate::util::default_outlet_id(&mut tx).await?,
+        None => crate::util::default_outlet_id(&mut *tx).await?,
     };
 
     // lock items and read cost at sale (owner-visible)
@@ -238,7 +257,7 @@ pub async fn create(
         .await?;
 
         let move_id = post_move(
-            &mut tx,
+            &mut *tx,
             ctx.user_id,
             &PostMove {
                 item_id: p.item_id,
@@ -301,7 +320,7 @@ pub async fn create(
     let mut receivable_id: Option<Uuid> = None;
     if !paid {
         // receivable stub; contact defaults to a per-tenant "Pelanggan Umum"
-        let contact_id = ensure_generic_customer(&mut tx).await?;
+        let contact_id = ensure_generic_customer(&mut *tx).await?;
         let rid = now_v7();
         sqlx::query(
             "insert into receivable (id, tenant_id, contact_id, sale_id, amount, due_date, paid_amount)
@@ -317,21 +336,8 @@ pub async fn create(
         receivable_id = Some(rid);
     }
 
-    if let Some(op_id) = body.op_id {
-        sqlx::query(
-            "insert into op_log (op_id, tenant_id, result)
-             values ($1, current_setting('app.tenant_id')::uuid, $2)",
-        )
-        .bind(op_id)
-        .bind(json!({ "status": "applied", "endpoint": "sale.create", "row_id": sale_id }))
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    tx.commit().await?;
-
     let include_cost = ctx.can_read_cost();
-    Ok(Json(json!({
+    Ok(json!({
         "id": sale_id,
         "number": number,
         "outlet_id": outlet_id,
@@ -366,7 +372,7 @@ pub async fn create(
         "cash_entry_id": cash_entry_id,
         "receivable_id": receivable_id,
         "created_moves": created_moves,
-    })))
+    }))
 }
 
 async fn ensure_generic_customer(tx: &mut PgConnection) -> ApiResult<Uuid> {

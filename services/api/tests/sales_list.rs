@@ -77,6 +77,7 @@ async fn sales_list_returns_one_row_with_total_and_note() {
             cost: Some(0),
             min_stock: None,
             active: None,
+            op_id: None,
         }),
     )
     .await

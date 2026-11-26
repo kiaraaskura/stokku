@@ -335,3 +335,326 @@ genuinely server-backed, not locally computed.
 - Staff can post an item cost through the API even though the UI hides it.
 - Docker absent: `make up`, image builds and compose never run. Repo not on GitHub: CI inactive.
 - Browser offline/queued-retry flow not re-run by me this pass (Frontend demonstrated it).
+
+---
+
+## PRDTASK — Sprint 2 verified independently (2026-11-25)
+
+Ran the new endpoints myself against :8099 (Backend's branch build), fresh tenants, not from reports:
+
+| Check | Result |
+|---|---|
+| B11 opname: 2 items, count Kopi 9 of system 10 | posted 1 adjustment (−1), stock 9, re-post **409** |
+| B11 opname with no items in scope | 422, readable Indonesian |
+| D19 QRIS: valid EMVCo payload + MDR 0,7 | **200**, settings returned |
+| D19 QRIS: malformed payload | 422 `Payload QRIS tidak valid…`, server-side TLV validation real |
+| D20 QRIS confirm 60.000 @ 0,7% | gross 60.000 / mdr **420** / net **59.580**, status paid |
+| D20 second confirm | **409** `sudah dikonfirmasi` |
+| T-404 by-day total vs laba rugi (Oct) | **981.000 = 981.000** |
+| T-404 by-item + daily_total | 731.000 + 250.000 = **981.000** exact; category == item |
+| T-405 dashboard | cash −2.358.000, low_stock 4 (matches DB's proof) |
+| `qris_mdr_fee` in laba rugi | present, 420, reported separately from gross revenue |
+
+Ratified in docs (this branch): `qris_mdr_fee` and stock-report `data[]` added to API_CONTRACT;
+opname session/line tables added to DATA_MODEL §1 with the immutability rule.
+
+Note for the record: my first two QRIS payload attempts were rejected — that was my hand-built TLV,
+not a server fault. A correct CRC payload was accepted. The validator is doing its job.
+
+---
+
+## PRDTASK — the `sale_line` sync gap (2026-11-25), decided
+
+Reproduced on :8099 myself, fresh tenant, a 2-line sale (total 25.000):
+
+```
+pull?cursor=0&limit=200 -> tables {tenant, outlet, membership, cash_category,
+  item, stock_move, stock_level, sale, payment, cash_entry}
+sale rows pulled: 1   has "lines" key: false
+sale_line rows pulled: 0
+```
+
+So a second device receives revenue but cannot render the sale's lines or the HPP drill-down.
+This would fail acceptance A7 on device B and it is exactly the class of quiet data loss section C
+exists to catch.
+
+Decision (in docs/SYNC_INCREMENT.md): embed lines in the sale payload on pull, handler-side, no
+schema change. Rejected the alternative of giving sale_line its own tenant_id + change_log + RLS —
+a migration to fix an artefact of per-row fetching, when a sale is always an aggregate.
+
+Also confirmed from the same pull: `stock_level` does pull (so device B can render stock without
+replaying moves), and `voided` is carried on the sale rather than being a tombstone.
+
+## Run 8 — 2026-11-25, Sprint-2 + sync merged; section C gate built and proved
+
+Merged in PRDTASK's order, each reviewed for ownership first:
+
+| # | Branch | Commits | What |
+|---|---|---|---|
+| 1 | db | 64dcca8, 6641e6a, b4f4d3e | 0013 report views, 0014 opname tables, sync-substrate proofs |
+| 2 | backend | 797e36c, 8c3f0dd, 93d14be, 043c002, 3b1a8c8 | QRIS Tier 0, opname, report endpoints, sync push/pull, sale-line embed |
+| 3 | docs-ratify | beec0a7, b1c05f9, 548b23b | qris_mdr_fee/data[], SYNC_INCREMENT.md, sale_line decision |
+
+main = `d6513e7`. Frontend is **not** merged — see below.
+
+DB had to land first because Backend reads those views/tables, and Backend's branch carried an
+older `scripts/verify.sql` snapshot from its own db merge. Checked that DB's newer sync-substrate
+proofs survived the merge: `grep -c "sync substrate" scripts/verify.sql` → 1. No conflict.
+
+### Verified myself on merged main
+
+| Check | Result |
+|---|---|
+| fresh DB, migrate as non-superuser | 1..14, exit 0 |
+| seed | ok |
+| `scripts/verify.sh` | exit 0, 0 FAIL/ERROR |
+| `cargo build` / `clippy -D warnings` / `fmt --check` | clean |
+| `cargo test` with `STOKKU_TEST_ADMIN_URL` | **11/11** |
+| `acceptance-spine.sh` @ :8095 (main-built) | **64 pass, 0 fail** |
+| `/reports/stock`, `/reports/sales?group_by=day|item`, `/reports/dashboard` | all **200** (were 404) |
+
+Report figures cross-checked against DB's independent numbers: stock at cost 20 rows, dashboard
+`cash_position −2.358.000`, `low_stock_count 4`.
+
+### NEW: `docs/qa/two-device.sh` — the section C gate
+
+Device B sees the tenant **only** through `/sync/pull` with its own cursor — never a REST read.
+That is the property the demo depends on, and it is what makes the HPP assertion meaningful.
+
+Sharp assertions (totals matching is not enough):
+- the pulled sale row must carry an embedded `lines` array with both lines
+- device B's HPP must be non-empty **and equal** device A's — revenue with an empty HPP
+  breakdown is a FAIL
+- a voided sale must arrive with `voided_at` set and `deleted=false` (void is not a tombstone)
+- replaying the same push batch returns `duplicate` and does not double-apply
+
+**Proved to fail on pre-fix code.** Built `043c002` (before the embed) and ran the same gate:
+
+```
+FAIL  pulled sale carries an embedded lines array — expected [2] got [MISSING]
+FAIL  device B HPP breakdown is EMPTY — revenue would show with no HPP (section C blocker)
+PASS  device B sale total matches (72000)
+```
+
+Totals matched while the breakdown was empty — exactly the case that would have shipped silently.
+
+**On merged main (3b1a8c8):** **24 pass, 0 fail**, `TARGET http://127.0.0.1:8095/v1`.
+Device B pulled 28 rows, stock 15, both line ids present, HPP 43.500 = device A's
+(5 × 7.500 + 3 × 2.000), total 72.000, replay `duplicate`, stock 17 not 19, void carried
+`voided_at` with `deleted=false`.
+
+### F-14 — Frontend's sale applier does not read the embedded `lines` array (open, blocking C)
+
+Frontend's branch tip is `d95edd6` with `apps/web/src/db/repo.ts` **uncommitted**. Its
+`case 'sale'` in `applyOneChange` writes the sale row only; it handles a separate `sale_line`
+change row, which no longer exists now that lines are embedded (the same gap that just bit
+Backend, client-side). So the server fix is merged but the browser would still show revenue with
+an empty HPP drill-down on device B. Not merged for this reason. Frontend also still owes the
+two-device browser evidence; this script is the HTTP-level equivalent and is now the gate.
+
+## Run 9 — 2026-11-25, Frontend merged; browser two-device evidence; F-15 found
+
+Merged `frontend` (c999b40, 9b6c278, 6a9fdd5, d95edd6, 3dbacd7, cc2e6c1) → main `b4709f9`.
+Reviewed the `cc2e6c1` diff first as asked: it only adds an embedded-lines block inside
+`case 'sale'` of `applyOneChange`; `postSale` is untouched, so the local-post path is unchanged.
+Lines are written inside `applyPullPage`'s single transaction before the cursor update, so
+cursor-after-commit holds.
+
+Fail-proof checked myself: with the lines block removed, `pull-sale-lines.test.ts` fails 3/3;
+restored, passes 3/3. Merged main: **64/64 tests**, tsc clean, build **150.12 KB gz**.
+
+### Browser two-device run (main-built API on :8093, fresh DB `stokku_b2`)
+
+Device A = origin `:5191`, device B = origin `:5192` (separate OPFS, so B's data can only
+arrive by pull). Fresh tenant "Warung Dua Perangkat", owner signup on A only.
+
+| | Device A (`:5191`) | Device B (`:5192`, pull only) |
+|---|---|---|
+| Item | Gula 1 kg, 20 kg | Gula 1 kg, **sisa 15 kg** (never created it) |
+| Laba rugi Nov | Pendapatan 60.000 · HPP 37.500 · laba kotor 22.500 · opex 0 · net 22.500 | **identical**, labelled "Data server" |
+| HPP drill-down | Rp37.500 | **"S000001 · 25 Nov 2026 · Rp37.500" — non-empty** |
+| Sync dot | Tersinkron | Tersinkron |
+
+Voided sale: voided on A, device B's Nota screen shows `S000001 … Rp60.000 **void**` and the
+sale is still listed (not deleted, not a tombstone). **Section C browser half: PASS.**
+
+### F-15 — BLOCKER: voiding a paid sale books the reversal as opex (server-side)
+
+Found while checking the void above. Voiding the only paid sale of the period gives:
+
+```
+GET /v1/sales            -> S000001, voided_at set, payment status "refunded"
+GET /v1/cash-entries     -> out 60000 category "penjualan" ref_type "sale_void"
+GET /v1/reports/laba-rugi -> revenue 0, hpp 0, opex 60000, net_profit -60000
+```
+
+Net profit should be **0**: revenue correctly excludes the voided sale, but `v_opex` counts the
+reversal entry as an operating expense. Cause is one line in `0009_views_qris.sql`:
+
+```sql
+and coalesce(c.ref_type, '') not in ('purchase', 'stock_move')
+```
+
+`sale_void` is a newer ref_type (Backend's void path) and is not excluded. Every voided paid sale
+therefore inflates opex and understates net profit by the sale total — the demo's most important
+number. The seeded October figures are unaffected only because the seed's voided sale was not paid.
+
+My harness missed this because B12 only asserted stock restored + voided_at; it never re-read the
+report. Now added: revenue must drop by exactly the voided sale, opex must be unchanged by the
+void, and revenue−hpp−opex must equal net. On the current build that assertion fails
+`opex expected [5000] got [65000]`.
+
+Fix belongs to DB (their view): exclude `ref_type = 'sale_void'` (and ideally also `ref_type =
+'sale'`, so a paid sale's cash_in can never be double-classified) from `v_opex`, in a new
+migration — do not edit 0009, it is checksummed on main.
+
+## Run 10 — 2026-11-25, section C browser evidence re-run on merged main
+
+Frontend was already merged in run 9 (`b4709f9`), including all seven commits
+`c999b40, 9b6c278, 6a9fdd5, d95edd6, 3dbacd7, cc2e6c1, 4cf6a0f`. Verified each is an ancestor
+of main rather than re-merging. main = `d120d8d`.
+
+Re-ran both gates against a binary built from `main` (`git archive main` → own build), fresh DB
+`stokku_c3` migrated 1..14, API on :8092, and two fresh browser origins (:5181 / :5182) so
+device B's storage cannot contain anything device A wrote.
+
+| Gate | Target | Result |
+|---|---|---|
+| `docs/qa/two-device.sh` (HTTP) | `http://127.0.0.1:8092/v1` | **24 pass, 0 fail** |
+| `docs/qa/acceptance-spine.sh` (HTTP) | `http://127.0.0.1:8092/v1` | **63 pass, 1 fail** — F-15 only |
+
+### Browser two-device, 2-line sale
+
+Device A only ever signed up, created both items and sold; device B signed in afterwards on a
+separate origin.
+
+| | Device A (:5181) | Device B (:5182, pull only) |
+|---|---|---|
+| Items | Gula 1 kg 20 kg, Kopi Sachet 10 pcs | both present, **never created on B** |
+| Stock after sale | Gula 15 kg, Kopi 7 pcs | **identical** |
+| Laba rugi Nov | Pendapatan 72.000 · HPP 43.500 · laba kotor 28.500 · opex 0 · net 28.500 | **identical**, "Data server" |
+| HPP drill-down | — | **two lines: Rp37.500 (5 × 7.500) + Rp6.000 (3 × 2.000) = 43.500** |
+| Dot | Tersinkron | Tersinkron |
+
+**Section C browser evidence: PASS.** The HPP drill-down on the pull-only device is non-empty and
+equals device A's, which is the assertion this gate exists for.
+
+### Void on device B
+
+Voided the sale on A, synced B: Nota shows `S000001 · 25 Nov 2026 · Tunai Rp72.000 void` — still
+listed, marked void, not deleted. Correct.
+
+### F-15 still open, and now visibly wrong in the UI
+
+Same void makes both devices show `opex Rp72.000, net −Rp72.000` where it must be 0 — the
+server's `v_opex` counts the `sale_void` reversal as an operating expense. The client faithfully
+renders the server's wrong number. DB has the fix assigned; the harness assertion
+`voiding does not create opex` is the failing line and stays until it passes.
+
+## Run 11 — 2026-11-25, sale detail sheet merged (998d23b)
+
+Reviewed `998d23b` before merging: it touches only `apps/web/src/db/repo.ts`,
+`features/sales/SalesList.tsx`, `i18n/messages.ts`. The repo change is one read-only query
+(`getSaleLinesLocal`, `SELECT ... FROM sale_line WHERE sale_id = ?`) registered in `repoMethods`
+— no write path, no change to the embedded-lines applier. tsc clean, 64/64 tests,
+build 150.56 KB gz, merge-tree clean.
+
+main = `c50e82a`. Both gates re-run against a binary built from main, fresh DB `stokku_c4`
+(migrated 1..14), API on :8091:
+
+| Gate | Target | Result |
+|---|---|---|
+| `docs/qa/two-device.sh` | `http://127.0.0.1:8091/v1` | **24 pass, 0 fail** |
+| `docs/qa/acceptance-spine.sh` | `http://127.0.0.1:8091/v1` | **63 pass, 1 fail** (F-15 only) |
+
+### Where the queue stands
+
+| Branch | Tip | Ahead of main |
+|---|---|---|
+| db | b4f4d3e | 0 — merged |
+| backend | a6f4d33 | 0 — merged |
+| frontend | 998d23b | 0 — merged (this run) |
+| docs-ratify | 548b23b | 0 — merged |
+
+Nothing is left in the merge queue from this round. `services/api/migrations` still ends at
+`0014_opname.sql`: **DB has not yet shipped the F-15 view fix**, so the one failing assertion
+above is unchanged and expected.
+
+---
+
+## PRDTASK — F-15 fixed (2026-11-25)
+
+Reproduced first, on a fresh tenant: one paid 60.000 sale plus a real 5.000 listrik
+expense, then void the sale.
+
+Before: `revenue 0 | hpp 0 | opex 65000 | net -65000` — the void's mirror cash entry was
+counted as operating expense, understating net by the sale total.
+
+Root cause was worse than the view: the exclusion rule exists in **three** places, and the
+API's report handler never read `v_opex` at all — it re-implemented the rule inline in the
+totals query *and* in the opex drill-down. So fixing only DB's view changed nothing on the
+wire. That is the real defect: one accounting rule, three copies, already drifting.
+
+Fixed:
+- `0015_opex_excludes_sale_reversal.sql` — `v_opex` excludes `ref_type in ('sale','sale_void')`
+  as well as `purchase`/`stock_move`, keeps `security_invoker = true`.
+- `routes/reports.rs` — the same exclusion added to both inline queries (totals and drill),
+  with a comment pointing at the view so the next person sees the duplication.
+
+After: `revenue 0 | hpp 0 | opex 5000 | net -5000`, and the opex drill-down lists only
+`[('listrik', 5000)]`. That is correct: the sale vanished, the real expense remains.
+
+Verified: cargo build, fmt, clippy `-D warnings` clean; cargo test 10/10 with
+STOKKU_TEST_ADMIN_URL; acceptance harness **67 pass / 0 fail** on :8099, which includes the
+three void assertions (revenue drops by exactly the sale, opex unchanged by the void,
+revenue − hpp − opex = net).
+
+Filed for a later increment (not fixed here, because it is a refactor rather than a bug):
+the opex rule should live in exactly one place. Two of the three copies are gone from the
+API path, but the handler still computes totals instead of reading `v_opex`.
+
+---
+
+## F24 — sales report vs sales list equality (26 November 2026)
+
+**Verdict: EQUAL. No defect.** Run by PRDTASK against the API on `:8099` built from
+`main` 7f39a9d, on a fresh tenant created for this check (not the seeded demo shop, so
+every number below is attributable).
+
+**Data created** — 2 items (Gula 1 kg @12.000 cost 7.500; Kopi Sachet @5.000 cost 3.000),
+stock 50 each, then 3 sales across 2 days plus one real expense:
+
+| Sale | Date | Lines | Total | State |
+|---|---|---|---|---|
+| S000001 | 2026-11-23 | 5 × Gula @12.000 | 60.000 | live |
+| S000002 | 2026-11-23 | 2 × Kopi @5.000 | 10.000 | live |
+| S000003 | 2026-11-24 | 3 × Gula + 1 × Kopi | 41.000 | **voided** |
+| cash entry | 2026-11-24 | listrik, out | 5.000 | live |
+
+**Comparison, range 2026-11-23..2026-11-24:**
+
+| Measure | Value |
+|---|---|
+| `GET /reports/sales?group_by=day` revenue | **70.000** |
+| `GET /reports/sales?group_by=item` revenue | **70.000** |
+| `GET /reports/laba-rugi` revenue | **70.000** |
+| `GET /sales` non-voided rows | **70.000** across 2 rows |
+| `GET /sales` voided rows | 1 row, `voided_at` set, excluded from revenue |
+| Posted sale bodies (ground truth) | **70.000** across 2 live sales |
+
+Per day: 2026-11-23 report 70.000 = truth 70.000. 2026-11-24 has no live sale after the
+void, and correctly produces no revenue row.
+Per item: Gula 60.000 = 60.000; Kopi 10.000 = 10.000.
+
+Checks all pass: by-day = by-item, by-day = laba rugi revenue, by-day = list total,
+by-day = posted truth, per-day equality, per-item equality, and the voided sale is
+excluded from revenue everywhere while still listed and flagged (that last one is F-15's
+sibling rule and it holds).
+
+Accounting cross-check on the same range: opex **5.000** (the listrik entry only — the
+void adds nothing), net **21.500** = 70.000 − 43.500 HPP − 5.000. Correct.
+
+**What this does not prove:** revenue equality only. It does not assert that every
+individual sale row in the list appears in a report drill-down, and it does not cover
+`daily_total`-mode sales (none exist in this tenant) nor very large ranges. Those remain
+open if F24 is meant to cover them.

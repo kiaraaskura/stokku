@@ -13,14 +13,16 @@ export PATH := /home/kiara/.local/bin:$(PATH)
 # Throwaway database used only by `make migrate-check` (dropped afterwards).
 CI_DB ?= stokku_ci
 
-# Load .env (repo root) and put the bundled Postgres client tools on PATH,
-# without failing when either is absent.
+# Load .env (repo root) and put the Postgres client tools on PATH, without
+# failing when either is absent. PGBIN wins, then the known local install
+# locations (the pg17 path is the current shared dev cluster; the older
+# hermes path is kept as a fallback for machines that still have it).
 define env_setup
 	if [[ -f .env ]]; then set -a; source .env; set +a; fi
 	if ! command -v psql >/dev/null 2>&1; then
-	  if [[ -n "$${PGBIN:-}" && -x "$$PGBIN/psql" ]]; then export PATH="$$PGBIN:$$PATH"
-	  elif [[ -x /home/kiara/.hermes/cache/scratch/pg/bin/psql ]]; then export PATH="/home/kiara/.hermes/cache/scratch/pg/bin:$$PATH"
-	  fi
+	  for d in "$${PGBIN:-/nonexistent}" /home/kiara/.local/pg17/*/bin /home/kiara/.hermes/cache/scratch/pg/bin /usr/lib/postgresql/*/bin; do
+	    if [[ -x "$$d/psql" ]]; then export PATH="$$d:$$PATH"; break; fi
+	  done
 	fi
 endef
 
@@ -97,16 +99,55 @@ migrate-check: ## Migrations from zero on a throwaway DB + seed idempotency
 	$(env_setup)
 	if [[ ! -x scripts/migrate.sh || ! -x scripts/seed.sh ]]; then echo '-- db scripts not merged yet, skipping'; exit 0; fi
 	if [[ -z "$${DATABASE_URL:-}" ]]; then echo '!! DATABASE_URL not set (copy .env.example to .env)'; exit 1; fi
+	# This check must ALWAYS exercise the throwaway database. scripts/migrate.sh
+	# prefers MIGRATION_DATABASE_URL, so any inherited value (shell or .env) is
+	# deliberately forced empty here: migrate.sh then uses DATABASE_URL — the
+	# throwaway — plus its own admin auto-fallback on the same server.
+	export MIGRATION_DATABASE_URL=
 	base="$${DATABASE_URL%/*}"
+	ci_url="$$base/$(CI_DB)"
+	# Admin view of the throwaway (user swapped to the bootstrap superuser,
+	# same server): RLS hides tenant rows from a context-less app-role read,
+	# and this check must not be able to "pass" on an invisible database.
+	admin_ci_url="$$(printf '%s' "$$ci_url" | sed -E 's#^(postgres(ql)?://)[^@/]*@#\1postgres@#')"
 	psql "$$base/postgres" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS $(CI_DB)" >/dev/null
 	psql "$$base/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE $(CI_DB)" >/dev/null
-	ci_url="$$base/$(CI_DB)"
-	echo ">> migrate from zero on $(CI_DB)"
+	echo ">> migrate from zero on $(CI_DB) (inherited MIGRATION_DATABASE_URL is ignored)"
 	DATABASE_URL="$$ci_url" ./scripts/migrate.sh
+	# Loud proof, not a silent pass: every migration file must have applied,
+	# from zero, on the throwaway itself.
+	n_files=$$(ls services/api/migrations/*.sql | wc -l | tr -d ' ')
+	applied=$$(psql "$$admin_ci_url" -tAc 'SELECT count(*) FROM _sqlx_migrations' | tr -d ' ')
+	max_file=$$(ls services/api/migrations/*.sql | sed -E 's#.*/0*([0-9]+)_[^/]*\.sql#\1#' | sort -n | tail -1)
+	max_applied=$$(psql "$$admin_ci_url" -tAc 'SELECT max(version) FROM _sqlx_migrations' | tr -d ' ')
+	if [[ "$$applied" != "$$n_files" || "$$max_applied" != "$$max_file" ]]; then
+	  echo "!! migrate-check FAILED: $$applied/$$n_files migrations applied (max version $$max_applied, expected $$max_file) on $(CI_DB)"
+	  psql "$$base/postgres" -c "DROP DATABASE IF EXISTS $(CI_DB)" >/dev/null
+	  exit 1
+	fi
+	echo ">> all $$n_files migrations applied from zero (latest: $$max_applied)"
 	echo '>> seed run #1'
 	DATABASE_URL="$$ci_url" ./scripts/seed.sh
-	echo '>> seed run #2 (must insert 0 rows)'
+	# The seed must actually seed (read as the superuser: RLS hides tenant
+	# rows from a context-less app-role connection, so a no-op seed would
+	# otherwise look identical to a working one).
+	seeded=$$(psql "$$admin_ci_url" -tAc 'SELECT count(*) FROM item' | tr -d ' ')
+	if [[ "$$seeded" -eq 0 ]]; then
+	  echo "!! migrate-check FAILED: seed run #1 inserted nothing on $(CI_DB)"
+	  psql "$$base/postgres" -c "DROP DATABASE IF EXISTS $(CI_DB)" >/dev/null
+	  exit 1
+	fi
+	echo ">> seed run #1 seeded the demo tenant ($$seeded items)"
+	seeded_rows=$$(psql "$$admin_ci_url" -tAc 'SELECT count(*) FROM change_log' | tr -d ' ')
+	echo '>> seed run #2 (must write nothing: every write lands a change_log row)'
 	DATABASE_URL="$$ci_url" ./scripts/seed.sh
+	written=$$(psql "$$admin_ci_url" -tAc 'SELECT count(*) FROM change_log' | tr -d ' ')
+	if [[ "$$written" != "$$seeded_rows" ]]; then
+	  echo "!! migrate-check FAILED: seed run #2 wrote rows (change_log $$seeded_rows -> $$written)"
+	  psql "$$base/postgres" -c "DROP DATABASE IF EXISTS $(CI_DB)" >/dev/null
+	  exit 1
+	fi
+	echo ">> seed is idempotent (change_log $$written rows, unchanged)"
 	psql "$$base/postgres" -v ON_ERROR_STOP=1 -c "DROP DATABASE $(CI_DB)" >/dev/null
 	echo '>> migrate-check OK'
 
@@ -143,6 +184,13 @@ down: ## Stop the docker compose stack (volumes kept: data persists)
 	@set -euo pipefail
 	if ! command -v docker >/dev/null 2>&1; then echo '!! docker is not installed on this machine'; exit 1; fi
 	docker compose down
+
+.PHONY: images
+images: ## Build multi-arch (amd64+arm64) api + web images with buildx
+	@set -euo pipefail
+	if ! command -v docker >/dev/null 2>&1; then echo '!! docker is not installed on this machine — images are config-verified only'; exit 1; fi
+	docker buildx build --platform linux/amd64,linux/arm64 -f infra/api.Dockerfile -t stokku/api:local --load .
+	docker buildx build --platform linux/amd64,linux/arm64 -f infra/web.Dockerfile -t stokku/web:local --load .
 
 # ------------------------------------------------------------------ extras --
 
