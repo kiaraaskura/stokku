@@ -300,6 +300,36 @@ export class ApiClient {
     return this.request<ApiOpnameSession>('/opname', { method: 'POST', body: JSON.stringify(input), auth: true })
   }
 
+  /**
+   * Download an export (CSV/HTML/ZIP). Returns the raw Response so the caller
+   * can stream it to a download; NOT buffered row-by-row on the client.
+   * Throws ApiError with the server's Indonesian message on failure.
+   */
+  async exportFile(path: string): Promise<Response> {
+    if (!this.accessToken) await this.tryRefresh()
+    const headers: Record<string, string> = {}
+    if (this.accessToken) headers.Authorization = `Bearer ${this.accessToken}`
+    let response: Response
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/v1${path}`, { headers })
+    } catch (err) {
+      throw new NetworkError(err instanceof Error ? err.message : 'network')
+    }
+    if (!response.ok) {
+      let code = 'internal'
+      let message = `HTTP ${response.status}`
+      try {
+        const body = (await response.json()) as { error?: { code?: string; message?: string } }
+        code = body.error?.code ?? code
+        message = body.error?.message ?? message
+      } catch {
+        // non-JSON body
+      }
+      throw new ApiError(response.status, code, message)
+    }
+    return response
+  }
+
   // ---- sync (T-302/T-303 wire contract, docs/SYNC_INCREMENT.md) ----
 
   async syncPush(input: {
