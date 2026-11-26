@@ -383,7 +383,58 @@ async fn account_archive_is_a_complete_zip() {
         "sale id present in the archive"
     );
 
+    // full_data.json must be valid JSON with every table present as an array,
+    // and its row counts must agree with manifest.json. Without this the
+    // streamed writer could emit malformed JSON and every check above would
+    // still pass.
+    let raw = entry_body(&bytes, "full_data.json").expect("full_data.json entry");
+    let data: serde_json::Value =
+        serde_json::from_slice(&raw).expect("full_data.json parses as JSON");
+    let obj = data.as_object().expect("full_data.json is an object");
+    let manifest_raw = entry_body(&bytes, "manifest.json").expect("manifest.json entry");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_raw).expect("manifest parses");
+    for (table, count) in manifest["counts"].as_object().unwrap() {
+        let arr = obj
+            .get(table)
+            .unwrap_or_else(|| panic!("{table} missing from full_data.json"))
+            .as_array()
+            .unwrap_or_else(|| panic!("{table} is not an array"));
+        assert_eq!(
+            arr.len() as i64,
+            count.as_i64().unwrap(),
+            "{table} row count disagrees with the manifest"
+        );
+    }
+    assert_eq!(
+        obj.get("sale").and_then(|v| v.as_array()).map(|a| a.len()),
+        Some(1),
+        "the sale is in full_data.json"
+    );
+
     common::drop_db(st.pool.clone()).await;
+}
+
+/// Read a STORED entry's body from the local headers (our writer never
+/// compresses, so data length sits at offset 18 of each local header).
+fn entry_body(bytes: &[u8], want: &str) -> Option<Vec<u8>> {
+    let mut p = 0usize;
+    while p + 30 <= bytes.len() {
+        if &bytes[p..p + 4] != b"PK\x03\x04" {
+            return None;
+        }
+        let size = u32::from_le_bytes([bytes[p + 18], bytes[p + 19], bytes[p + 20], bytes[p + 21]])
+            as usize;
+        let name_len = u16::from_le_bytes([bytes[p + 26], bytes[p + 27]]) as usize;
+        let extra_len = u16::from_le_bytes([bytes[p + 28], bytes[p + 29]]) as usize;
+        let name = String::from_utf8(bytes[p + 30..p + 30 + name_len].to_vec()).ok()?;
+        let data_start = p + 30 + name_len + extra_len;
+        if name == want {
+            return Some(bytes[data_start..data_start + size].to_vec());
+        }
+        p = data_start + size;
+    }
+    None
 }
 
 fn find_eocd(b: &[u8]) -> Option<usize> {
