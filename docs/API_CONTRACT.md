@@ -120,6 +120,21 @@ Credit sale (`payment_method:"credit"` or `paid:false`) stores a receivable stub
 Laba rugi definition is fixed: `revenue − hpp − opex = net_profit`; stock purchases are inventory, not expense.
 `qris_mdr_fee` (approved 2026-11-25) reports the MDR withheld on QRIS separately; revenue stays **gross**, so profit is not understated by the fee. `data[]` on the stock report (approved 2026-11-25) is the per-item detail behind the four totals; totals are authoritative, `data` is the drill-down.
 
+## Exports (owner only)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/exports/sales.csv?from=&to=` | one row per non-voided sale; row count and total reconcile with `/reports/sales` for the same range |
+| GET | `/exports/stock.csv` | current stock per item with `cost_avg`, `sale_price`, `value_at_cost`, `value_at_sale` |
+| GET | `/exports/stock-moves.csv?from=&to=` | stock ledger rows in `business_date` order |
+| GET | `/exports/cash.csv?from=&to=` | cash-book entries (`direction`, `category`, `amount`, `ref_type`) |
+| GET | `/exports/laba-rugi.csv?from=&to=` | `kunci,label,jumlah` rows for the same totals as `/reports/laba-rugi` |
+| GET | `/exports/laba-rugi.html?from=&to=&compare=true` | printable laba rugi; self-contained HTML, no scripts, prints to PDF from any phone browser |
+| GET | `/exports/opname/{id}` | printable stock count sheet for one opname session |
+| GET | `/exports/account.zip` | full account archive: `manifest.json`, `full_data.json` and 7 CSVs (items, stock levels, stock moves, sales with lines, cash entries, contacts, laba rugi all time) |
+
+`from`/`to` default to 1 January of the current year through today (Asia/Jakarta). CSV is deliberately spreadsheet-safe for an Indonesian locale: header row, integer rupiah without thousand separators, qty fixed to 3 decimals, ISO-8601 dates, CRLF, minimal quoting. Exports stream; a 50k-row ledger must finish under 60 s. Every path is `Cap::Export`, so a staff token gets `403` on all of them, and every query runs under the caller's RLS context.
+
 ## Opname
 
 | Method | Path | Notes |

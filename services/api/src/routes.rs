@@ -1,5 +1,6 @@
 pub mod cash;
 pub mod categories;
+pub mod exports;
 pub mod items;
 pub mod opname;
 pub mod qris;
@@ -73,6 +74,14 @@ pub fn router(state: AppState) -> Router {
             "/v1/outlets/{id}/qris",
             get(qris::get_settings).put(qris::put_settings),
         )
+        .route("/v1/exports/sales.csv", get(exports::sales_csv))
+        .route("/v1/exports/stock.csv", get(exports::stock_csv))
+        .route("/v1/exports/stock-moves.csv", get(exports::stock_moves_csv))
+        .route("/v1/exports/cash.csv", get(exports::cash_csv))
+        .route("/v1/exports/laba-rugi.csv", get(exports::laba_rugi_csv))
+        .route("/v1/exports/laba-rugi.html", get(exports::laba_rugi_html))
+        .route("/v1/exports/opname/{id}", get(exports::opname_html))
+        .route("/v1/exports/account.zip", get(exports::account_zip))
         .route("/v1/sync/push", post(sync::push))
         .route("/v1/sync/pull", get(sync::pull))
         .route("/v1/opname", post(opname::create))

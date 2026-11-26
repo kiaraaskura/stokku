@@ -22,24 +22,24 @@ pub struct LabaRugiQuery {
     pub compare: Option<bool>,
 }
 
-struct Totals {
-    revenue: i64,
-    hpp: i64,
-    unpaid_revenue: i64,
-    opex: i64,
-    qris_mdr_fee: i64,
+pub struct Totals {
+    pub revenue: i64,
+    pub hpp: i64,
+    pub unpaid_revenue: i64,
+    pub opex: i64,
+    pub qris_mdr_fee: i64,
 }
 
 impl Totals {
-    fn gross_profit(&self) -> i64 {
+    pub fn gross_profit(&self) -> i64 {
         self.revenue - self.hpp
     }
-    fn net_profit(&self) -> i64 {
+    pub fn net_profit(&self) -> i64 {
         self.revenue - self.hpp - self.opex
     }
 }
 
-async fn totals_for(
+pub async fn totals_for_tx(
     tx: &mut sqlx::PgConnection,
     from: NaiveDate,
     to: NaiveDate,
@@ -159,7 +159,7 @@ pub async fn laba_rugi(
     }
 
     let mut tx = begin_tx(&st.pool, &ctx).await?;
-    let t = totals_for(&mut tx, from, to).await?;
+    let t = totals_for_tx(&mut tx, from, to).await?;
 
     let mut v = json!({
         "from": from,
@@ -183,7 +183,7 @@ pub async fn laba_rugi(
         let days = (to - from).num_days() + 1;
         let cmp_to = from - chrono::Duration::days(1);
         let cmp_from = cmp_to - chrono::Duration::days(days - 1);
-        let cmp = totals_for(&mut tx, cmp_from, cmp_to).await?;
+        let cmp = totals_for_tx(&mut tx, cmp_from, cmp_to).await?;
         v["comparison"] = json!({
             "from": cmp_from,
             "to": cmp_to,
