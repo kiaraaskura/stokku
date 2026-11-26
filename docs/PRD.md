@@ -11,6 +11,41 @@
 
 ---
 
+## Judul dan SDGs
+
+*Diratifikasi 26 November 2026 oleh PRDTASK (Product) atas penugasan Captain. Sumber usulan: `JUDUL_DAN_SDGS_STOKKU.md` dari writer; klaim SDG di bawah sudah dicocokkan dengan Metadata Indikator TPB/SDGs Indonesia (Bappenas).*
+
+**Judul terpilih:**
+
+> **Stokku: Aplikasi Inventaris dan Buku Kas Luring untuk Laba Rugi UMKM yang Akurat**
+
+**Judul formal (sampul laporan):**
+
+> **Stokku: Rancang Bangun Aplikasi Inventaris dan Buku Kas Berbasis Luring untuk Meningkatkan Ketepatan Perhitungan Laba Rugi Usaha Mikro, Kecil, dan Menengah di Indonesia**
+
+**Pemetaan SDGs.** Tingkat klaim: **Inti** = produk adalah instrumen langsung; **Pendukung** = kontribusi nyata tetapi tidak langsung; **Konteks** = hanya untuk segmen tertentu dan belum terukur.
+
+| SDGs | Nama resmi (Bappenas) | Tingkat | Target | Dasar klaim |
+|---|---|---|---|---|
+| **8** | Pekerjaan Layak dan Pertumbuhan Ekonomi | **Inti** | 8.3, 8.10 | Laba rugi dan riwayat transaksi yang bisa diekspor menjadi bukti kelayakan kredit UMKM (F-07, F-09, F-13) |
+| **10** | Mengurangi Kesenjangan | Pendukung | 10.2 | Bahasa Indonesia, luring, ponsel 2 GB, aksesibilitas 4,5:1 (F-11, F-12, T-505) |
+| **1** | Tanpa Kemiskinan | Pendukung | 1.4, 1.5 | Riwayat laba untuk keuangan mikro; opname dan laporan stok mengurangi kebocoran modal (F-05, F-10) |
+| **9** | Industri, Inovasi, dan Infrastruktur | Pendukung | 9.3 | Menurunkan biaya digitalisasi usaha kecil, tetapi tidak menyediakan kredit maupun integrasi rantai nilai |
+| **4** | Pendidikan Berkualitas | Pendukung (lemah) | 4.4 | Panel penjelasan dan artikel bantuan; indikator 4.4 mengukur keterampilan TIK, bukan literasi laba rugi |
+| **12** | Konsumsi dan Produksi yang Bertanggung Jawab | Konteks | 12.3, 12.5 | Stok mati dan opname menekan pembelian berlebih; 12.3 khusus limbah pangan, jadi hanya segmen makanan |
+| **5** | Kesetaraan Gender | Konteks | 5.a | Tidak ada fitur khusus gender; 5.a tentang hak atas tanah, sehingga kaitannya tidak langsung dan tidak boleh diklaim sebagai target terukur |
+
+**Koreksi terhadap usulan writer** (dicatat agar tidak diwariskan sebagai klaim berlebih):
+
+1. **SDG 9 diturunkan dari "pendukung kuat" menjadi "pendukung".** Target 9.3 berbunyi *"Meningkatkan akses industri kecil dan usaha lainnya … terhadap jasa keuangan, termasuk kredit terjangkau, dan integrasi mereka ke dalam rantai nilai dan pasar."* Produk ini tidak menyalurkan kredit dan tidak mengintegrasikan rantai nilai; yang disumbangkan hanya penurunan biaya dan hambatan digitalisasi. Klaim "kuat" tidak tertopang rumusan resmi target.
+2. **Nama resmi SDG 10 adalah "Mengurangi Kesenjangan"** (Bappenas), bukan "Berkurangnya Kesenjangan". Keduanya beredar, tetapi dokumen ini memakai bentuk Bappenas.
+3. **SDG 4 dan 5.a tetap ada, tetapi batas klaimnya ditulis eksplisit.** 4.4 mengukur keterampilan TIK/kejuruan, sedangkan produk ini mengajarkan literasi laba rugi; 5.a tentang hak perempuan atas tanah dan sumber daya ekonomi, bukan fitur perangkat lunak. Keduanya tidak boleh dipakai sebagai target terukur sampai data beta (T-515) tersedia.
+4. **SDG 2, 3, 6, 7, 11, 13, 14, 15, 16, dan 17 tidak diklaim.** Tidak ada fitur di PRD/TASKS yang menopang targetnya secara langsung.
+
+Indikator resmi SDGs diukur di tingkat nasional. Stokku hanya menyumbang melalui proksi tingkat toko — misalnya persentase toko yang membuka laba rugi bulanan, kelengkapan riwayat transaksi, dan selisih opname — dan tidak mengklaim pergerakan indikator nasional.
+
+---
+
 ## 1. Summary
 
 A simple bookkeeping app for Indonesian micro and small businesses (UMKM) — warungs, toko, laundry, katering, bengkel — that tracks **stock in/out**, **money in/out**, and turns both into a **real profit-and-loss (laba rugi)** number without accounting knowledge. Built for Indonesia: Bahasa Indonesia, IDR, WIB/WITA/WIT, and **QRIS** at the point of payment.
