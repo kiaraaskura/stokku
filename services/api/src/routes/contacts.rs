@@ -22,8 +22,9 @@ use axum::Json;
 
 use crate::ctx::{AuthCtx, Cap};
 use crate::error::{ApiError, ApiResult};
+use crate::routes::cash::{apply_cash_entry, CashEntryReq};
 use crate::state::AppState;
-use crate::util::{begin_tx, default_outlet_id, now_v7, parse_date, today_jakarta};
+use crate::util::{begin_tx, now_v7, parse_date, today_jakarta};
 
 const DEFAULT_PAYABLE_CATEGORY: &str = "pembelian_stok";
 const DEFAULT_RECEIVABLE_CATEGORY: &str = "penjualan";
@@ -506,38 +507,34 @@ async fn pay_bill(
         ));
     }
 
-    let outlet_id = match body.outlet_id {
-        Some(o) => o,
-        None => default_outlet_id(&mut tx).await?,
-    };
-
-    // The cash book is the only place money is recorded; link it to the bill.
-    let cash_id = now_v7();
-    sqlx::query(
-        "insert into cash_entry
-           (id, tenant_id, outlet_id, direction, amount, category, method, ref_type, ref_id,
-            business_date, note, op_id, created_by)
-         values ($1, current_setting('app.tenant_id')::uuid, $2, $3, $4, $5, $6, $7, $8, $9,
-                 $10, $11, $12)",
+    // One cash path: reuse the same apply_cash_entry that the cash book and
+    // sync push use, so validation and the row shape cannot drift from them.
+    let cash = apply_cash_entry(
+        &mut tx,
+        &ctx,
+        &CashEntryReq {
+            outlet_id: body.outlet_id,
+            direction: direction.to_string(),
+            amount: body.amount,
+            category: category.to_string(),
+            method: body.method.clone(),
+            business_date: Some(business_date.to_string()),
+            note: body.note.clone(),
+            ref_type: Some(
+                if table == "payable" {
+                    "payable_payment"
+                } else {
+                    "receivable_payment"
+                }
+                .to_string(),
+            ),
+            ref_id: Some(id),
+            op_id: body.op_id,
+        },
     )
-    .bind(cash_id)
-    .bind(outlet_id)
-    .bind(direction)
-    .bind(body.amount)
-    .bind(category)
-    .bind(body.method.as_deref())
-    .bind(if table == "payable" {
-        "payable_payment"
-    } else {
-        "receivable_payment"
-    })
-    .bind(id)
-    .bind(business_date)
-    .bind(body.note.as_deref())
-    .bind(body.op_id)
-    .bind(ctx.user_id)
-    .execute(&mut *tx)
     .await?;
+    let cash_id: Uuid = serde_json::from_value(cash["id"].clone())
+        .map_err(|e| ApiError::Internal(format!("cash entry id: {e}")))?;
 
     sqlx::query(&format!(
         "update {table} set paid_amount = paid_amount + $1 where id = $2"
