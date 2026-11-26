@@ -1,5 +1,6 @@
 pub mod cash;
 pub mod categories;
+pub mod contacts;
 pub mod exports;
 pub mod items;
 pub mod opname;
@@ -66,6 +67,24 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/cash-entries", get(cash::list).post(cash::create))
         .route("/v1/cash-entries/{id}", delete(cash::reversal_delete))
         .route("/v1/cash-categories", get(cash::categories))
+        .route("/v1/contacts", get(contacts::list).post(contacts::create))
+        .route(
+            "/v1/contacts/{id}",
+            axum::routing::patch(contacts::update).delete(contacts::remove),
+        )
+        .route(
+            "/v1/payables",
+            get(contacts::list_payables).post(contacts::create_payable),
+        )
+        .route("/v1/payables/{id}/payments", post(contacts::pay_payable))
+        .route(
+            "/v1/receivables",
+            get(contacts::list_receivables).post(contacts::create_receivable),
+        )
+        .route(
+            "/v1/receivables/{id}/payments",
+            post(contacts::pay_receivable),
+        )
         .route("/v1/sales", get(sales::list).post(sales::create))
         .route("/v1/sales/{id}", get(sales::get_one))
         .route("/v1/sales/{id}/void", post(sales::void))
