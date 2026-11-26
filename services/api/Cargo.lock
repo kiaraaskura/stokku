@@ -1757,6 +1757,7 @@ dependencies = [
  "argon2",
  "axum",
  "chrono",
+ "futures-core",
  "hex",
  "jsonwebtoken",
  "rand 0.8.8",
