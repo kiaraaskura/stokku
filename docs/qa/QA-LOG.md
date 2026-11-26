@@ -612,3 +612,49 @@ revenue − hpp − opex = net).
 Filed for a later increment (not fixed here, because it is a refactor rather than a bug):
 the opex rule should live in exactly one place. Two of the three copies are gone from the
 API path, but the handler still computes totals instead of reading `v_opex`.
+
+---
+
+## F24 — sales report vs sales list equality (26 November 2026)
+
+**Verdict: EQUAL. No defect.** Run by PRDTASK against the API on `:8099` built from
+`main` 7f39a9d, on a fresh tenant created for this check (not the seeded demo shop, so
+every number below is attributable).
+
+**Data created** — 2 items (Gula 1 kg @12.000 cost 7.500; Kopi Sachet @5.000 cost 3.000),
+stock 50 each, then 3 sales across 2 days plus one real expense:
+
+| Sale | Date | Lines | Total | State |
+|---|---|---|---|---|
+| S000001 | 2026-11-23 | 5 × Gula @12.000 | 60.000 | live |
+| S000002 | 2026-11-23 | 2 × Kopi @5.000 | 10.000 | live |
+| S000003 | 2026-11-24 | 3 × Gula + 1 × Kopi | 41.000 | **voided** |
+| cash entry | 2026-11-24 | listrik, out | 5.000 | live |
+
+**Comparison, range 2026-11-23..2026-11-24:**
+
+| Measure | Value |
+|---|---|
+| `GET /reports/sales?group_by=day` revenue | **70.000** |
+| `GET /reports/sales?group_by=item` revenue | **70.000** |
+| `GET /reports/laba-rugi` revenue | **70.000** |
+| `GET /sales` non-voided rows | **70.000** across 2 rows |
+| `GET /sales` voided rows | 1 row, `voided_at` set, excluded from revenue |
+| Posted sale bodies (ground truth) | **70.000** across 2 live sales |
+
+Per day: 2026-11-23 report 70.000 = truth 70.000. 2026-11-24 has no live sale after the
+void, and correctly produces no revenue row.
+Per item: Gula 60.000 = 60.000; Kopi 10.000 = 10.000.
+
+Checks all pass: by-day = by-item, by-day = laba rugi revenue, by-day = list total,
+by-day = posted truth, per-day equality, per-item equality, and the voided sale is
+excluded from revenue everywhere while still listed and flagged (that last one is F-15's
+sibling rule and it holds).
+
+Accounting cross-check on the same range: opex **5.000** (the listrik entry only — the
+void adds nothing), net **21.500** = 70.000 − 43.500 HPP − 5.000. Correct.
+
+**What this does not prove:** revenue equality only. It does not assert that every
+individual sale row in the list appears in a report drill-down, and it does not cover
+`daily_total`-mode sales (none exist in this tenant) nor very large ranges. Those remain
+open if F24 is meant to cover them.
