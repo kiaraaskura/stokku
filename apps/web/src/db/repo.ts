@@ -1721,6 +1721,23 @@ export function resolveIdMap(db: Db, localId: string): string {
   return row?.server_id ?? localId
 }
 
+export interface LocalSaleLine {
+  id: string
+  saleId: string
+  itemId: string
+  qtyM: number
+  unitPrice: number
+  discount: number
+  costAtSale: number
+}
+
+/** Lines of one local sale (sale detail sheet — includes pulled lines). */
+export function getSaleLinesLocal(db: Db, saleId: string): LocalSaleLine[] {
+  return db
+    .all<Record<string, unknown>>('SELECT * FROM sale_line WHERE sale_id = ? ORDER BY rowid', [saleId])
+    .map(rowToSaleLine)
+}
+
 /** Local sale rows for a month (offline sales-list fallback: queued sales not yet on the server). */
 export function listSalesLocal(db: Db, month: string): Sale[] {
   const { from, to } = monthRange(month)
@@ -1772,6 +1789,7 @@ export const repoMethods = {
   stockIn,
   postSale,
   getSale,
+  getSaleLinesLocal,
   listSalesLocal,
   addCashEntry,
   listCashEntries,

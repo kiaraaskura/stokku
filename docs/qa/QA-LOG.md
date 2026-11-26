@@ -550,3 +550,65 @@ Same void makes both devices show `opex Rp72.000, net −Rp72.000` where it must
 server's `v_opex` counts the `sale_void` reversal as an operating expense. The client faithfully
 renders the server's wrong number. DB has the fix assigned; the harness assertion
 `voiding does not create opex` is the failing line and stays until it passes.
+
+## Run 11 — 2026-11-25, sale detail sheet merged (998d23b)
+
+Reviewed `998d23b` before merging: it touches only `apps/web/src/db/repo.ts`,
+`features/sales/SalesList.tsx`, `i18n/messages.ts`. The repo change is one read-only query
+(`getSaleLinesLocal`, `SELECT ... FROM sale_line WHERE sale_id = ?`) registered in `repoMethods`
+— no write path, no change to the embedded-lines applier. tsc clean, 64/64 tests,
+build 150.56 KB gz, merge-tree clean.
+
+main = `c50e82a`. Both gates re-run against a binary built from main, fresh DB `stokku_c4`
+(migrated 1..14), API on :8091:
+
+| Gate | Target | Result |
+|---|---|---|
+| `docs/qa/two-device.sh` | `http://127.0.0.1:8091/v1` | **24 pass, 0 fail** |
+| `docs/qa/acceptance-spine.sh` | `http://127.0.0.1:8091/v1` | **63 pass, 1 fail** (F-15 only) |
+
+### Where the queue stands
+
+| Branch | Tip | Ahead of main |
+|---|---|---|
+| db | b4f4d3e | 0 — merged |
+| backend | a6f4d33 | 0 — merged |
+| frontend | 998d23b | 0 — merged (this run) |
+| docs-ratify | 548b23b | 0 — merged |
+
+Nothing is left in the merge queue from this round. `services/api/migrations` still ends at
+`0014_opname.sql`: **DB has not yet shipped the F-15 view fix**, so the one failing assertion
+above is unchanged and expected.
+
+---
+
+## PRDTASK — F-15 fixed (2026-11-25)
+
+Reproduced first, on a fresh tenant: one paid 60.000 sale plus a real 5.000 listrik
+expense, then void the sale.
+
+Before: `revenue 0 | hpp 0 | opex 65000 | net -65000` — the void's mirror cash entry was
+counted as operating expense, understating net by the sale total.
+
+Root cause was worse than the view: the exclusion rule exists in **three** places, and the
+API's report handler never read `v_opex` at all — it re-implemented the rule inline in the
+totals query *and* in the opex drill-down. So fixing only DB's view changed nothing on the
+wire. That is the real defect: one accounting rule, three copies, already drifting.
+
+Fixed:
+- `0015_opex_excludes_sale_reversal.sql` — `v_opex` excludes `ref_type in ('sale','sale_void')`
+  as well as `purchase`/`stock_move`, keeps `security_invoker = true`.
+- `routes/reports.rs` — the same exclusion added to both inline queries (totals and drill),
+  with a comment pointing at the view so the next person sees the duplication.
+
+After: `revenue 0 | hpp 0 | opex 5000 | net -5000`, and the opex drill-down lists only
+`[('listrik', 5000)]`. That is correct: the sale vanished, the real expense remains.
+
+Verified: cargo build, fmt, clippy `-D warnings` clean; cargo test 10/10 with
+STOKKU_TEST_ADMIN_URL; acceptance harness **67 pass / 0 fail** on :8099, which includes the
+three void assertions (revenue drops by exactly the sale, opex unchanged by the void,
+revenue − hpp − opex = net).
+
+Filed for a later increment (not fixed here, because it is a refactor rather than a bug):
+the opex rule should live in exactly one place. Two of the three copies are gone from the
+API path, but the handler still computes totals instead of reading `v_opex`.

@@ -85,14 +85,16 @@ pub async fn totals_for_tx(
     .await?;
 
     // opex: cash out, excluding stock purchases ('pembelian_stok', 'modal',
-    // purchase-linked) — "stok bukan beban"
+    // purchase-linked) — "stok bukan beban" — and sale money, which is revenue,
+    // not an expense: a paid sale's cash-in and its void reversal
+    // (ref_type 'sale' / 'sale_void') are both excluded. Mirrors v_opex (0015).
     let opex: i64 = sqlx::query_scalar(
         "select coalesce(sum(amount), 0)::bigint
          from cash_entry
          where direction = 'out'
            and business_date between $1 and $2
            and category not in ('pembelian_stok', 'modal')
-           and coalesce(ref_type, '') not in ('purchase', 'stock_move')",
+           and coalesce(ref_type, '') not in ('purchase', 'stock_move', 'sale', 'sale_void')",
     )
     .bind(from)
     .bind(to)
@@ -298,7 +300,7 @@ pub async fn drill(
                  where direction = 'out'
                    and business_date between $1 and $2
                    and category not in ('pembelian_stok', 'modal')
-                   and coalesce(ref_type, '') not in ('purchase', 'stock_move')
+                   and coalesce(ref_type, '') not in ('purchase', 'stock_move', 'sale', 'sale_void')
                  order by business_date, id",
             )
             .bind(from)
