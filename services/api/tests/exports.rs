@@ -432,6 +432,193 @@ async fn account_archive_is_a_complete_zip() {
     common::drop_db(st.pool.clone()).await;
 }
 
+/// A second shop in the same database must not appear in the first shop's
+/// archive. `sale_line` is the trap: it has no tenant_id and no RLS, so only
+/// a read that goes through its parent sale is safe.
+#[tokio::test]
+async fn archive_does_not_leak_another_shops_sale_lines() {
+    if common::admin_url().is_none() {
+        eprintln!("SKIPPED: STOKKU_TEST_ADMIN_URL not set");
+        return;
+    }
+    let (st, owner_a, _staff, outlet_a, items_a) = setup("tenantA").await;
+
+    // Tenant A's own sale, so "A's lines" is a non-empty set to compare against.
+    let Json(sale_a) = create_sale(
+        State(st.clone()),
+        owner_a.clone(),
+        Json(SaleReq {
+            outlet_id: Some(outlet_a),
+            business_date: Some("2026-11-24".into()),
+            customer_id: None,
+            discount: None,
+            payment_method: "cash".into(),
+            paid: Some(true),
+            note: Some("milik tenant A".into()),
+            lines: vec![SaleLineReq {
+                item_id: items_a[0],
+                qty: Decimal::new(3_000, 3),
+                unit_price: 12000,
+                discount: None,
+            }],
+            op_id: None,
+        }),
+    )
+    .await
+    .expect("sale A");
+    let sale_a_id: Uuid = serde_json::from_value(sale_a["id"].clone()).unwrap();
+
+    // Tenant B: a whole second shop with its own sale, in the same database.
+    let Json(tok_b) = signup(
+        State(st.clone()),
+        Json(SignupReq {
+            email: format!("export-b-{}@test.local", Uuid::now_v7().simple()),
+            password: "SI_SECRET_PASSWORD_V81KXQ2D".into(),
+            name: "Pemilik B".into(),
+            business_name: "Warung B".into(),
+        }),
+    )
+    .await
+    .expect("signup B");
+    let owner_b = AuthCtx {
+        user_id: serde_json::from_value(tok_b["user"]["id"].clone()).unwrap(),
+        tenant_id: serde_json::from_value(tok_b["tenant"]["id"].clone()).unwrap(),
+        role: Role::Owner,
+    };
+    let outlet_b: Uuid = serde_json::from_value(tok_b["outlet"]["id"].clone()).unwrap();
+    let Json(item_b) = create_item(
+        State(st.clone()),
+        owner_b.clone(),
+        Json(CreateItemReq {
+            name: "Rahasia B".into(),
+            sku: None,
+            barcodes: None,
+            category_id: None,
+            base_unit: "pcs".into(),
+            units: None,
+            sale_price: 9000,
+            cost: Some(4000),
+            min_stock: None,
+            active: None,
+            op_id: None,
+        }),
+    )
+    .await
+    .expect("item B");
+    let item_b: Uuid = serde_json::from_value(item_b["id"].clone()).unwrap();
+    let Json(_) = create_move(
+        State(st.clone()),
+        owner_b.clone(),
+        Json(StockMoveReq {
+            item_id: item_b,
+            outlet_id: Some(outlet_b),
+            r#type: "in".into(),
+            qty_positive: Decimal::new(10_000, 3),
+            unit_cost: Some(4000),
+            business_date: None,
+            supplier: None,
+            note: None,
+            op_id: None,
+        }),
+    )
+    .await
+    .expect("stock in B");
+    let Json(sale_b) = create_sale(
+        State(st.clone()),
+        owner_b.clone(),
+        Json(SaleReq {
+            outlet_id: Some(outlet_b),
+            business_date: Some("2026-11-25".into()),
+            customer_id: None,
+            discount: None,
+            payment_method: "cash".into(),
+            paid: Some(true),
+            note: Some("rahasia tenant B".into()),
+            lines: vec![SaleLineReq {
+                item_id: item_b,
+                qty: Decimal::new(2_000, 3),
+                unit_price: 9000,
+                discount: None,
+            }],
+            op_id: None,
+        }),
+    )
+    .await
+    .expect("sale B");
+    let sale_b_id: Uuid = serde_json::from_value(sale_b["id"].clone()).unwrap();
+
+    // Tenant A's archive, over both shops' data.
+    let resp = account_zip(State(st.clone()), owner_a.clone())
+        .await
+        .expect("archive A");
+    let bytes = body(resp).await;
+    let raw = entry_body(&bytes, "full_data.json").expect("full_data.json");
+    let obj: serde_json::Value = serde_json::from_slice(&raw).expect("json");
+
+    let b_text = sale_b_id.to_string();
+    assert!(
+        !bytes.windows(b_text.len()).any(|w| w == b_text.as_bytes()),
+        "tenant B's sale leaked into tenant A's archive"
+    );
+    assert!(
+        !bytes
+            .windows(15)
+            .any(|w| w == "rahasia tenant B".as_bytes()),
+        "tenant B's note leaked into tenant A's archive"
+    );
+    // And the line count is exactly A's one line, not every line in the DB.
+    assert_eq!(
+        obj["sale_line"].as_array().map(|a| a.len()),
+        Some(1),
+        "archive carries only tenant A's own sale lines"
+    );
+    assert!(
+        obj["sale"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"].as_str() == Some(sale_a_id.to_string().as_str())),
+        "archive holds A's own sale"
+    );
+    let sale_ids: std::collections::HashSet<&str> = obj["sale"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    for line in obj["sale_line"].as_array().unwrap() {
+        assert!(
+            sale_ids.contains(line["sale_id"].as_str().unwrap()),
+            "a sale_line in A's archive belongs to a sale outside A"
+        );
+    }
+
+    // The CSV path must be scoped the same way.
+    let csv = body(
+        sales_csv(
+            State(st.clone()),
+            owner_a,
+            Query(RangeQuery {
+                from: Some("2026-11-01".into()),
+                to: Some("2026-11-30".into()),
+            }),
+        )
+        .await
+        .expect("sales.csv A"),
+    )
+    .await;
+    assert!(
+        !csv.windows(b_text.len()).any(|w| w == b_text.as_bytes()),
+        "tenant B's sale leaked into tenant A's sales CSV"
+    );
+    assert!(
+        String::from_utf8_lossy(&csv).lines().count() == 2,
+        "A's sales CSV has its header and exactly its own sale"
+    );
+
+    common::drop_db(st.pool.clone()).await;
+}
+
 /// Read a STORED entry's body from the local headers (our writer never
 /// compresses, so data length sits at offset 18 of each local header).
 fn entry_body(bytes: &[u8], want: &str) -> Option<Vec<u8>> {
