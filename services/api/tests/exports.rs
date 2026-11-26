@@ -412,6 +412,23 @@ async fn account_archive_is_a_complete_zip() {
         "the sale is in full_data.json"
     );
 
+    // sale_line has no tenant_id of its own, so a direct read of it would
+    // leak other shops' lines. Every line in the archive must belong to a sale
+    // that is itself in the archive.
+    let sale_ids: std::collections::HashSet<String> = obj["sale"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect();
+    for line in obj["sale_line"].as_array().unwrap() {
+        let parent = line["sale_id"].as_str().unwrap();
+        assert!(
+            sale_ids.contains(parent),
+            "sale_line {parent} does not belong to any sale in this archive"
+        );
+    }
+
     common::drop_db(st.pool.clone()).await;
 }
 

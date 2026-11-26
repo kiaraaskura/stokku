@@ -779,9 +779,19 @@ fn zip_seal_streamed(zip: &mut [u8], entries: &mut [ZipEntry], crc: u32, size: u
 }
 
 /// Read a whole table as JSON rows through RLS (archive payload).
+///
+/// `sale_line` is the one table with no `tenant_id` of its own and no RLS, so
+/// it must never be read directly: read it only through its parent sale, which
+/// RLS does scope. Without this a shop's archive would contain every other
+/// shop's sale lines.
 async fn table_json(conn: &mut PgConnection, table: &str) -> Result<Vec<Value>, sqlx::Error> {
-    let sql =
-        format!("select coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) as rows from {table} t");
+    let sql = if table == "sale_line" {
+        "select coalesce(jsonb_agg(to_jsonb(l)), '[]'::jsonb) as rows
+         from sale_line l join sale s on s.id = l.sale_id"
+            .to_string()
+    } else {
+        format!("select coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) as rows from {table} t")
+    };
     let v: Value = sqlx::query_scalar(&sql).fetch_one(conn).await?;
     Ok(v.as_array().cloned().unwrap_or_default())
 }
