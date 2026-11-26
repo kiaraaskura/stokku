@@ -2,6 +2,7 @@ pub mod cash;
 pub mod categories;
 pub mod contacts;
 pub mod exports;
+pub mod imports;
 pub mod items;
 pub mod opname;
 pub mod qris;
@@ -44,6 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/me", get(auth::me))
         .route("/v1/items", get(items::list).post(items::create))
         .route("/v1/items/search", get(items::search))
+        .route("/v1/items/import", post(imports::import_items))
         .route(
             "/v1/items/{id}",
             get(items::get_one)
@@ -115,5 +117,6 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/reports/dashboard", get(reports::dashboard))
         .route("/v1/reports/laba-rugi", get(reports::laba_rugi))
         .route("/v1/reports/laba-rugi/drill", get(reports::drill))
+        .route("/v1/reports/reconcile", get(imports::reconcile))
         .with_state(state)
 }

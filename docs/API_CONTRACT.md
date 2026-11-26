@@ -135,6 +135,13 @@ Laba rugi definition is fixed: `revenue − hpp − opex = net_profit`; stock pu
 
 `from`/`to` default to 1 January of the current year through today (Asia/Jakarta). CSV is deliberately spreadsheet-safe for an Indonesian locale: header row, integer rupiah without thousand separators, qty fixed to 3 decimals, ISO-8601 dates, CRLF, minimal quoting. Exports stream; a 50k-row ledger must finish under 60 s. Every path is `Cap::Export`, so a staff token gets `403` on all of them, and every query runs under the caller's RLS context.
 
+## Bulk import and reconcile
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/items/import?dry_run=true` | CSV body (text/csv or plain text). Header, case-insensitive, any order: `name, sku, base_unit, sale_price, cost, min_stock, barcode`. Only `name`, `base_unit`, `sale_price` are required. Returns `{dry_run, valid, failed, total_rows, errors:[{row,error}]}`. `row` is the 1-based file line, header = 1. Quoted fields with `""` escapes and a comma inside a name are handled. Max 5.000 rows per file. A bad row is reported and skipped; it never aborts its neighbours. `dry_run=true` writes nothing. |
+| GET | `/reports/reconcile?outlet_id=` | owner only. `{checked, ok, mismatches:[{item_id,name,sku,stock_level,ledger_sum,difference}]}` comparing `stock_level` against `sum(stock_move.qty)`. Read-only: a mismatch is reported for a human, never auto-repaired. |
+
 ## Contacts, payables and receivables (T-133)
 
 Contacts are operational, so both owner and staff may read and write them. Payables
