@@ -90,7 +90,9 @@ scripts/verify.sh  # all proof queries: ledger projection, change log, RLS, laba
 
 - **Coverage**: every tenant-scoped business table has the `change_log`
   trigger (18/18; only `change_log`, `audit_log`, `op_log`, `refresh_token`
-  are deliberately excluded). Each INSERT/UPDATE lands exactly one row with
+  and `membership_invite` are deliberately excluded — the last two are
+  security tables whose rows must never enter the sync feed; both carry
+  forced RLS). Each INSERT/UPDATE lands exactly one row with
   `row_id`, `op`, `server_seq` (a no-op UPDATE writes nothing).
 - **Tombstone rule (decision)**: `deleted` is **derived from the row payload
   the pull already returns** — `deleted = (row->>'deleted_at' is not null)`.

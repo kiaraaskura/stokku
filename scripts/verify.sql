@@ -394,10 +394,13 @@ from (
   where n.nspname = 'public' and c.relkind = 'r'
     and c.relname in (select table_name from information_schema.columns
                       where table_schema = 'public' and column_name = 'tenant_id')
-    and c.relname not in ('op_log','change_log','audit_log','refresh_token')
+    and c.relname not in ('op_log','change_log','audit_log','refresh_token','membership_invite')
     and not exists (select 1 from pg_trigger t
                     where t.tgrelid = c.oid and t.tgname = 'change_log' and not t.tgisinternal)
 ) missing;
+-- membership_invite is excluded on purpose: like refresh_token it is a
+-- security table (one-time hashed invite codes) that must never enter the
+-- sync feed; it does carry forced RLS (verified in the RLS section above).
 insert into item (id, tenant_id, name, base_unit, sale_price, cost_avg)
 values ('01900000-0000-7000-8000-00DEAD000102', '01900000-0000-7000-8000-000000000001',
         'verify tombstone', 'pcs', 1000, 500);
