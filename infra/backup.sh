@@ -23,13 +23,11 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
 fi
 : "${DATABASE_URL:?DATABASE_URL is not set (copy .env.example to .env, or export it)}"
 
-# Dev-machine convenience: the bundled psql/pg_dump is not always on PATH.
+# Dev-machine convenience: the Postgres client tools are not always on PATH.
 if ! command -v pg_dump >/dev/null 2>&1; then
-  if [[ -n "${PGBIN:-}" && -x "$PGBIN/pg_dump" ]]; then
-    export PATH="$PGBIN:$PATH"
-  elif [[ -x /home/kiara/.hermes/cache/scratch/pg/bin/pg_dump ]]; then
-    export PATH="/home/kiara/.hermes/cache/scratch/pg/bin:$PATH"
-  fi
+  for d in "${PGBIN:-/nonexistent}" /home/kiara/.local/pg17/*/bin /home/kiara/.hermes/cache/scratch/pg/bin /usr/lib/postgresql/*/bin; do
+    if [[ -x "$d/pg_dump" ]]; then export PATH="$d:$PATH"; break; fi
+  done
 fi
 command -v pg_dump >/dev/null 2>&1 || { echo "pg_dump not found" >&2; exit 1; }
 

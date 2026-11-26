@@ -1,32 +1,26 @@
-# Stokku API image — multi-stage, owner: Deployment (T-005).
+# Stokku API image — multi-stage, owner: Deployment.
 # Build context is the REPO ROOT:
 #   docker build -f infra/api.Dockerfile .
-# Multi-arch (amd64 + arm64):
+# Multi-arch (amd64 + arm64), or use `make images`:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -f infra/api.Dockerfile -t <registry>/stokku-api:<tag> --push .
-#
-# NOTE for Backend: the release binary is expected at
-# services/api/target/release/stokku-api (cargo package/bin named
-# "stokku-api"). If the binary gets a different name, change ARG BIN
-# (and the ENTRYPOINT) or tell Deployment in the channel.
-
-ARG BIN=stokku-api
+# Binary name "stokku-api" is confirmed by Backend (cargo package/bin name).
+# Runtime connects as the NON-superuser role via DATABASE_URL (see
+# docs/DEPLOY.md) so forced RLS binds — never point it at a superuser.
 
 FROM rust:1-bookworm AS build
-ARG BIN
 WORKDIR /build
-# Whole crate incl. migrations (sqlx runtime queries need no DB at build
-# time; deps-only layer caching can be added once the crate layout settles).
+# Whole crate incl. Cargo.lock for reproducible builds; sqlx runtime queries
+# need no DB at build time (no sqlx macros, no .sqlx prepare).
 COPY services/api/ .
-RUN cargo build --release
+RUN cargo build --release --locked
 
 FROM debian:bookworm-slim AS runtime
-ARG BIN
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --no-create-home --home /nonexistent stokku
-COPY --from=build /build/target/release/${BIN} /usr/local/bin/stokku-api
+COPY --from=build /build/target/release/stokku-api /usr/local/bin/stokku-api
 USER stokku
 ENV PORT=8080 \
     RUST_LOG=info
