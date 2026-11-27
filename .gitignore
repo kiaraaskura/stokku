@@ -10,4 +10,5 @@ target/
 tmp/
 .pnpm-store/
 backups/
+release/
 *.tsbuildinfo
