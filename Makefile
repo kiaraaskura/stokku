@@ -192,6 +192,12 @@ images: ## Build multi-arch (amd64+arm64) api + web images with buildx
 	docker buildx build --platform linux/amd64,linux/arm64 -f infra/api.Dockerfile -t stokku/api:local --load .
 	docker buildx build --platform linux/amd64,linux/arm64 -f infra/web.Dockerfile -t stokku/web:local --load .
 
+DEST ?= release
+.PHONY: release
+release: ## Build the release bundle (api binary, web build, db, config, docs) into DEST
+	@set -euo pipefail
+	./infra/release.sh "$(DEST)"
+
 # ------------------------------------------------------------------ extras --
 
 .PHONY: backup

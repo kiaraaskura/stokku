@@ -1,44 +1,68 @@
 # Stokku — Inventaris UMKM
 
-Bookkeeping for Indonesian micro and small shops: stock + money in, one honest **laba rugi** out. Bahasa Indonesia first, IDR, offline-first, QRIS at checkout.
+Bookkeeping for Indonesian micro and small shops: stock in, money in, one honest **laba rugi** out.
 
-Docs: [PRD](docs/PRD.md) · [tasks](docs/TASKS.md) · [work split](docs/WORKSPLIT.md) · [API contract](docs/API_CONTRACT.md) · [data model](docs/DATA_MODEL.md) · [decisions](docs/DECISIONS.md) · [acceptance](docs/ACCEPTANCE.md)
+Bahasa Indonesia first · IDR rupiah · offline-first · works in any modern browser · QRIS at checkout.
+
+- **Stok** — items, barcodes, units, 3-tap stock-in, running average cost
+- **Kas** — cash book, expenses, payables/receivables
+- **Penjualan** — cart, credit sales, void, receipts
+- **Laba rugi** — revenue, HPP, gross, opex, net — every number drills down
+- **Multi-perangkat** — local SQLite + outbox, sync when online; staff roles with server-side capability checks
+
+## Quick start
+
+You need: [Node.js 22+](https://nodejs.org) with [pnpm](https://pnpm.io), [Rust](https://rustup.rs), and [PostgreSQL 16+](https://www.postgresql.org).
+
+```sh
+git clone <this repo> && cd stokku
+cp .env.example .env        # then edit: DATABASE_URL, JWT_SECRET, APP_BASE_URL
+make migrate                # create schema (from zero)
+make seed                   # optional: demo tenant "Warung Bu Sri"
+make dev                    # web on http://localhost:5173, API on :8080
+```
+
+Demo login (after `make seed`): `owner@demo.test` / `Demo1234!`
+
+Other commands: `make test` (web tests, API tests + clippy, migration check) · `make build` · `make up` / `make down` (Docker: postgres + api + web) · `make release` (one-command release bundle) · `make backup` (pg_dump with 7-day retention).
+
+Env vars and the migration step: [docs/DEPLOY.md](docs/DEPLOY.md). Which platform runs what: [docs/PLATFORMS.md](docs/PLATFORMS.md).
+
+## Platforms
+
+| Platform | Status |
+|---|---|
+| Linux, Windows, macOS — **any browser** | ✓ works today (web app + API) |
+| Linux — native API binary | ✓ `make build` (Rust, single binary) |
+| Windows — Docker / WSL | ✓ `make up` (needs Docker) |
+| Android, iPhone, iPad — browser / PWA | ✓ works today |
+| Android, Windows, macOS native app | planned — Capacitor / Tauri shells (`apps/mobile`, `apps/desktop` are placeholders) |
+
+Details and limits: [docs/PLATFORMS.md](docs/PLATFORMS.md).
 
 ## Layout
 
 ```
-apps/web            React + Vite app (also the PWA shell)
-apps/desktop        Tauri 2 shell          (Sprint 4)
-apps/mobile         Capacitor shell        (Sprint 4)
+apps/web            React + Vite app (the client — offline-first, local SQLite)
+apps/desktop        Tauri 2 shell (placeholder, planned)
+apps/mobile         Capacitor shell (placeholder, planned)
 services/api        Rust axum API + sqlx migrations
-packages/shared     DTOs + zod schemas shared by web and API
-infra               deploy, backup, compose
-docs                specs
+packages/shared     DTOs shared by web and API
+infra               deploy, Dockerfiles, compose, backup, release
+docs                specs: PRD, API contract, data model, acceptance
 ```
-
-## Command contract
-
-These are the commands every member may rely on; Deployment implements them.
-
-| Command | Does |
-|---|---|
-| `make dev` | web + API locally, hot reload |
-| `make migrate` | run Postgres migrations from zero |
-| `make seed` | idempotent demo tenant |
-| `make test` | web tests, API tests, clippy, migration check |
-| `make build` | production build of every app |
-| `make up` | docker compose: postgres + api + web |
-| `make down` | stop compose |
-
-Env: copy `.env.example` to `.env`; required at minimum `DATABASE_URL`, `JWT_SECRET`, `APP_BASE_URL`.
 
 ## Conventions
 
-- Branches per member (`backend`, `frontend`, `db`, `deploy`), worktrees under `/home/kiara/OpenBot/Shared/wt/`. Only the Captain merges to `main`.
-- Money integer rupiah; qty `NUMERIC(14,3)`; IDs UUIDv7; UTC storage, outlet timezone display.
-- User-visible strings in `i18n` (id default, en secondary). No hardcoded Indonesian in components.
-- Every mutating client write gets a UUIDv7 `op_id` and an outbox row in the same local transaction.
+- Money: integer rupiah, no floats. Qty: `NUMERIC(14,3)`. IDs: UUIDv7.
+- UTC storage, rendered in the outlet timezone.
+- Every tenant's data is isolated by **forced row-level security** — the API always connects as a non-superuser role.
+- User-visible strings via i18n (Indonesian default, English secondary).
+
+## Docs
+
+[PRD](docs/PRD.md) · [tasks](docs/TASKS.md) · [API contract](docs/API_CONTRACT.md) · [data model](docs/DATA_MODEL.md) · [decisions](docs/DECISIONS.md) · [acceptance](docs/ACCEPTANCE.md) · [deploy](docs/DEPLOY.md)
 
 ## Status
 
-Sprint 0 skeleton. Demo spine target: shop → item → stock in → sale → payment → laba rugi, offline, with a second device syncing.
+MVP core complete and green: acceptance, API, web and two-device sync suites all pass (`make test` runs them). Native app shells and store listings are the remaining roadmap. License: [MIT](LICENSE).
