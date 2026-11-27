@@ -3,14 +3,14 @@
 Source of truth for who builds what. Derived from `PRD.md` + `TASKS.md`.
 Owner: PRDTASK. Distribution and tracking: **Captain**.
 
-Repo: `/home/kiara/OpenBot/Shared/stokku` (git, branch `main` = integrated build).
+Repo: this repository (branch `main` = integrated build).
 
 ---
 
 ## 1. Ground rules
 
-1. **Never commit to `main`.** Each member works in their own worktree:
-   `git -C /home/kiara/OpenBot/Shared/stokku worktree add /home/kiara/OpenBot/Shared/wt/<role> -b <role>`
+1. **Never commit to `main`.** Each member works in their own worktree, for example:
+   `git worktree add ../wt/<role> -b <role>`
    Roles: `captain`, `backend`, `frontend`, `db`, `deploy`.
 2. **File ownership** (do not edit another owner's tree without asking in the channel):
 
