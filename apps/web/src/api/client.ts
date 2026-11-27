@@ -26,8 +26,35 @@ import {
   type Me,
   type Session,
 } from './types'
+import { HUB_URL_PARAM, HUB_URL_STORAGE_KEY, pickHubUrl } from './hub'
 
 export const API_BASE_URL: string = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8099'
+
+/**
+ * Runtime hub URL: a phone pairs with the desktop holding the data by opening
+ * a URL like `https://<desktop>/?api=https://<desktop>:8443` (see src/api/hub.ts).
+ * The param is remembered across visits, so later loads sync without it.
+ */
+function resolveApiBaseUrl(): string {
+  if (typeof window === 'undefined') return API_BASE_URL
+  try {
+    const res = pickHubUrl({
+      pageUrl: window.location.href,
+      storedUrl: window.localStorage.getItem(HUB_URL_STORAGE_KEY),
+      buildDefault: API_BASE_URL,
+    })
+    if (res.source === 'query') {
+      window.localStorage.setItem(HUB_URL_STORAGE_KEY, res.url)
+      // Remove the param so it is not re-processed or shared on accidentally.
+      const page = new URL(window.location.href)
+      page.searchParams.delete(HUB_URL_PARAM)
+      window.history.replaceState(null, '', page)
+    }
+    return res.url
+  } catch {
+    return API_BASE_URL
+  }
+}
 
 const REFRESH_KEY = 'stokku.refresh_token'
 const SESSION_KEY = 'stokku.session' // per-tab cache: survives reloads, including offline ones
@@ -54,7 +81,7 @@ export class ApiClient {
   private onSessionChange: (session: Session | null) => void
 
   constructor(opts: ApiClientOptions = {}) {
-    this.baseUrl = opts.baseUrl ?? API_BASE_URL
+    this.baseUrl = opts.baseUrl ?? resolveApiBaseUrl()
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch.bind(globalThis)
     this.loadRefresh = opts.loadRefresh ?? (() => {
       try {

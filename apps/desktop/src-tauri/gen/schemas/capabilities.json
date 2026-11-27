@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Stokku needs no native capabilities: the app is fully client-side","local":true,"windows":["main"],"permissions":["core:default"]}}

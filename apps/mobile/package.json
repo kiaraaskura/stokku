@@ -1,0 +1,19 @@
+{
+  "name": "@stokku/mobile",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Stokku Android shell (Capacitor 7): the same offline-first web app packaged as an .apk. No native code — data stays in the app's local storage.",
+  "scripts": {
+    "add:android": "cap add android",
+    "sync": "pnpm --filter @stokku/web build && cap sync android",
+    "open": "cap open android",
+    "apk": "cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^7.4.0",
+    "@capacitor/cli": "^7.4.0"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.4.0"
+  }
+}
