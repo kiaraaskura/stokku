@@ -658,3 +658,62 @@ void adds nothing), net **21.500** = 70.000 − 43.500 HPP − 5.000. Correct.
 individual sale row in the list appears in a report drill-down, and it does not cover
 `daily_total`-mode sales (none exist in this tenant) nor very large ranges. Those remain
 open if F24 is meant to cover them.
+
+## Run 12 — 2026-11-27, non-functional pass (G27, G29, G30)
+
+Captain ran section G by hand on `main` `dd14c4e` plus the two fixes below, in
+Chromium against a live API and a 5.000-item shop.
+
+### G30 — PASS
+
+Computed contrast on the real tokens:
+
+| Pair | Ratio |
+|---|---|
+| body text on background | 13.53 |
+| body text on surface | 14.69 |
+| muted text on surface | 6.91 |
+| muted text on sync chip (`--color-surface-alt`) | 6.12 |
+| danger / success / warning on surface | 7.43 / 7.13 / 6.31 |
+| white on primary | 5.47 |
+
+Lowest pair is 5.47:1, above the 4.5:1 line. The sync dot is not colour alone:
+`SyncDot` renders a text label ("Tersinkron", "Menunggu", …) next to the dot and
+carries `role="status"`. Tap targets: `--tap-target: 44px` and the primary
+controls use it.
+
+### G29 — PASS, after two real bugs were found and fixed
+
+1. **Enter on "Stok masuk" opened the edit screen instead of the stock-in
+   sheet.** The row is `role="button"` with its own `onKeyDown`; a key pressed
+   on the nested button bubbled to the row. Fixed by ignoring key events whose
+   target is not the row itself (`ItemList.tsx`).
+2. **Sheet focus landed on "Tutup".** The autofocus used one combined selector,
+   so the first match in document order was the close button. Now explicit
+   priority: `[data-autofocus]`, then a field, then any control (`Sheet.tsx`).
+3. **Enter did not submit the stock-in.** The sheet had no form. Wrapped the
+   fields in a `<form>` with a `type="submit"` save button (`StockInSheet.tsx`).
+
+Proof, keyboard only, no mouse: Tab reaches search → low-stock filter → row →
+"Stok masuk" (focus visible at every stop), Enter opens the sheet with the
+quantity field focused, qty 5 and cost 7.000 typed, Enter submits, sheet closes,
+row goes 7.000 → **7.005 pcs**. Reopened and **Escape closes** without saving.
+
+### G27 — KNOWN ISSUE (median pass, p95 over)
+
+5.000 items in the local store, 30 searches over 15 terms:
+
+| Measure | Result | Target |
+|---|---|---|
+| median | **60,2 ms** | < 100 ms |
+| p95 | **156,7 ms** | < 100 ms |
+| worst | **252,5 ms** | < 100 ms |
+
+The query is a `LIKE '%x%'` over name, SKU and barcode on every item, plus a
+`stock_level` join; SQLite cannot index a contains-search. Median is inside the
+budget, the tail is not. Not a blocker for the demo: results appear well inside
+one frame at the median, and the list stays virtualised. Fix, when there is
+time: an FTS5 table on name/SKU/barcode and query that instead.
+
+Signed: Captain, 2026-11-27. F–G may carry a known-issue note per the pass rule
+in `ACCEPTANCE.md`; this is that note for G27.
