@@ -80,3 +80,5 @@ docs                specs: PRD, API contract, data model, acceptance
 ## Status
 
 MVP core complete and green: acceptance, API, web and two-device sync suites all pass (`make test` runs them). Native app shells and store listings are the remaining roadmap. License: [MIT](LICENSE).
+
+Progress log: [PROGRESS.md](PROGRESS.md) · version history: [CHANGELOG.md](CHANGELOG.md).
