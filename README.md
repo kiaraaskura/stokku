@@ -34,24 +34,27 @@ The native shells (Tauri for desktop, Capacitor for Android/iOS) are **not built
 
 ## Run it
 
-Three options. The release bundle is the path that has been tested end to end.
+Three options. Option 1 is the one that has been tested end to end.
 
-### Option 1 — release bundle (tested)
+### Option 1 — prebuilt release bundle (tested)
 
-You need PostgreSQL 17 and Python 3 (for a static file server). The bundle contains `api/`, `web/`, and `db/`.
+Only if you downloaded a release bundle; the Git repository does not contain binaries. The bundle has `api/`, `web/`, and `db/`. You need PostgreSQL 17 and Python 3.
 
 ```sh
-# 1. Database
-export DATABASE_URL="postgres://stokku:CHANGE_ME_PASSWORD@127.0.0.1:5432/stokku"
+# once, as the postgres superuser
+createuser --login --pwprompt stokku
+createdb --owner stokku stokku
+
+export DATABASE_URL="postgres://stokku:YOUR_PASSWORD@127.0.0.1:5432/stokku"
 export MIGRATION_DATABASE_URL="postgres://postgres@127.0.0.1:5432/stokku"
 ./db/migrate.sh
 ./db/seed.sh
 
-# 2. API (terminal 1)
+# terminal 1 — API
 DATABASE_URL="$DATABASE_URL" JWT_SECRET="$(openssl rand -base64 48)" \
   APP_BASE_URL="http://127.0.0.1:8080" PORT=8099 ./api/stokku-api
 
-# 3. Web (terminal 2)
+# terminal 2 — web
 cd web && python3 -m http.server 8080 --bind 127.0.0.1
 ```
 
@@ -60,17 +63,17 @@ Open <http://127.0.0.1:8080> and sign in with the demo shop:
 - Owner: `owner@demo.test` / `Demo1234!`
 - Staff: `staff@demo.test` / `Demo1234!`
 
-`MIGRATION_DATABASE_URL` must name the **same database** as `DATABASE_URL`; it is an admin login used to run migrations, not a different database.
+The prebuilt web bundle calls `http://localhost:8099`, so the API must listen on 8099. `MIGRATION_DATABASE_URL` must name the **same database** as `DATABASE_URL`; it is an admin login used to run migrations, not a different database.
 
-### Option 2 — Docker
+### Option 2 — Docker (included, not verified)
 
 ```sh
 cp .env.example .env    # fill in the passwords
-make up                 # postgres + api + web, migrated and seeded
+make up                 # postgres + api + web
 make down               # stop, data is kept
 ```
 
-The compose stack is included but was not run in the environment this build came from (no Docker daemon there), so treat it as the less-travelled path.
+The compose stack was not run in the environment this build came from, and it has a known wiring gap: the web image builds with the default API URL `http://localhost:8099`, while compose publishes the API on 8080. Until that build argument is wired, the browser will not reach the API. Use Option 1 or 3.
 
 ### Option 3 — from source
 
@@ -81,10 +84,15 @@ pnpm install
 cp .env.example .env    # fill in DATABASE_URL and JWT_SECRET
 make migrate
 make seed
-make dev                # web on :5173, API on :8080
+
+# terminal 1 — API on the port the web app expects
+cd services/api && PORT=8099 cargo run
+
+# terminal 2 — web
+cd apps/web && pnpm dev
 ```
 
-`make dev` is documented but was not exercised in the build environment; the tested path is Option 1.
+Open <http://localhost:5173>. To point the web app at a different API, set `VITE_API_URL` at build or dev time.
 
 ## Platforms
 
