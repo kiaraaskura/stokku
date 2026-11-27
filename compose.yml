@@ -51,6 +51,9 @@ services:
       DATABASE_URL: postgres://stokku:${STOKKU_DB_PASSWORD}@postgres:5432/stokku
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
+      # A container must bind all interfaces to be reachable through its
+      # published port; the desktop default is loopback only.
+      BIND_ADDR: 0.0.0.0:8080
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "8080:8080"

@@ -18,9 +18,10 @@ async fn main() {
 
     let state = AppState::new(pool, cfg.clone());
 
+    let cors = cors_layer();
     let app = routes::router(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .layer(tower_http::cors::CorsLayer::permissive());
+        .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
@@ -36,6 +37,30 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");
+}
+
+/// CORS for the configured web origins only. `APP_BASE_URL` is the web
+/// origin; `CORS_ORIGINS` adds LAN extras. Never `*`: a token-authorized API
+/// reachable from the Wi-Fi must not be callable by an arbitrary website.
+fn cors_layer() -> tower_http::cors::CorsLayer {
+    use axum::http::{header, HeaderValue, Method};
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+
+    let allowed: Vec<HeaderValue> = stokku_api::config::cors_origins_from_env()
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .max_age(std::time::Duration::from_secs(600))
 }
 
 async fn shutdown_signal() {

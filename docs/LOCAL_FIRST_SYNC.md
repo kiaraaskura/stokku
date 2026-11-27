@@ -66,21 +66,26 @@ The QR is a **pairing code, not a password**:
 
 ### What the current build gets wrong for this plan
 
-Measured on the running release binary, not assumed:
+Measured on the running release binary, not assumed. **Items 1 and 2 are now
+fixed** (backend `c0b2d1e`): the API binds `127.0.0.1` by default, and CORS is
+an allow-list (`APP_BASE_URL` plus `CORS_ORIGINS`), never `*`. Item 3 (TLS
+listener + pairing endpoint) is still not built.
 
-- the API binds **`0.0.0.0`** by default (only `PORT` sets the address), so on a
-  shared Wi-Fi every device on the network can reach `/v1/auth/login`;
-- CORS is `CorsLayer::permissive()`, so `Access-Control-Allow-Origin: *` is
-  returned to any origin. Data still needs a bearer token (`/v1/items` without
-  one is `401`), so this is exposure of the login surface, not a data leak;
-- there is no TLS listener at all, and no pairing endpoint.
+1. ~~the API binds `0.0.0.0` by default (only `PORT` sets the address), so on a
+   shared Wi-Fi every device on the network can reach `/v1/auth/login`;~~
+   now loopback unless `BIND_ADDR` is set explicitly.
+2. ~~CORS is `CorsLayer::permissive()`, so `Access-Control-Allow-Origin: *` is
+   returned to any origin.~~ now an allow-list; `CORS_ORIGINS` names LAN
+   origins such as `http://192.168.1.5:8080`, and there is no wildcard.
+3. There is still no TLS listener and no pairing endpoint.
 
 Fix before any LAN/QR feature ships:
 
-1. `BIND_ADDR` defaults to `127.0.0.1:<port>` for desktop use; compose sets
+1. ~~`BIND_ADDR` defaults to `127.0.0.1:<port>` for desktop use; compose sets
    `BIND_ADDR=0.0.0.0:8080` explicitly, since a container must bind all
-   interfaces to be reachable through the published port.
-2. Replace permissive CORS with an allow-list of the configured web origin.
+   interfaces to be reachable through the published port.~~ done.
+2. ~~Replace permissive CORS with an allow-list of the configured web origin.~~
+   done — `APP_BASE_URL` plus `CORS_ORIGINS`.
 3. Add the TLS listener and the pairing endpoint together — never expose a
    plaintext pairing route.
 

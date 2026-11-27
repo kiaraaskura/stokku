@@ -12,6 +12,8 @@ This file is the short operational reference.
 | `JWT_SECRET` | yes | HMAC secret for access tokens. Generate: `openssl rand -base64 48`. |
 | `APP_BASE_URL` | yes | Public base URL of the web app, no trailing slash (CORS, share links). |
 | `PORT` | no | Listen port, default `8080`. `BIND_ADDR` overrides the whole address. |
+| `BIND_ADDR` | no | Full listen address. **Defaults to `127.0.0.1:<port>`** — loopback only. Set `0.0.0.0:<port>` (or the LAN IP) only when a phone must reach this PC on the same Wi-Fi; that exposes the login endpoint to the network, so pair it with `CORS_ORIGINS`. Compose sets `0.0.0.0:8080` because a container must. |
+| `CORS_ORIGINS` | no | Extra browser origins allowed, comma separated, for LAN use — e.g. `http://192.168.1.5:8080`. `APP_BASE_URL` and the local dev origins are always allowed. There is no wildcard. |
 | `MIGRATION_DATABASE_URL` | no | Admin (superuser) DSN used **only** by `scripts/migrate.sh`. It must name **the same database** as `DATABASE_URL` — the migrations run on this DSN, so pointing it at another database (e.g. `.../postgres`) silently migrates the wrong one. **Never the API's runtime DSN.** |
 | `STOKKU_TEST_ADMIN_URL` | no | Admin DSN for the DB-backed `cargo test`s only. **Never the API's runtime DSN.** |
 
