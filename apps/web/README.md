@@ -45,6 +45,15 @@ pnpm test       # vitest (money formatter, posting engine, atomicity, API client
 pnpm build      # tsc + vite production build
 ```
 
+## Install as an app (Windows, Linux, Android, iOS)
+
+The web build is an installable PWA — one codebase, installs as a real app on all four platforms:
+
+- `public/manifest.webmanifest` + generated icons (`public/icon.svg`, `public/icons/`, `public/apple-touch-icon.png`)
+- `public/sw.js` service worker; the build (`vite.config.ts`, plugin `stokku-sw-precache`) injects the full precache list and a per-build version, so the whole app works offline after the first visit. `src/pwa.test.ts` locks all of this in CI.
+
+Install paths: **Android** Chrome menu → "Tambahkan ke layar utama" · **iOS** Safari Share → "Tambahkan ke Layar Utama" · **Windows/Linux** Chrome/Edge address-bar install icon. Browsers only register service workers in secure contexts, so serve over HTTPS (or `localhost`); `pnpm build && pnpm preview` is enough to try it locally.
+
 ## Data conventions
 
 - Money: integer rupiah, never floats. `formatIDR(1234567)` → `Rp1.234.567`.
