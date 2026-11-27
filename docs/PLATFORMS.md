@@ -8,10 +8,10 @@ Android and Apple products", and what each platform needs.
 | Platform | How | Notes |
 |---|---|---|
 | **Linux** (x86_64, arm64) | API: `make build` → single Rust binary, or the Docker image (amd64 + arm64). Web: any browser or serve `apps/web/dist` statically. | Fully supported and tested here. |
-| **Windows** (10/11) | **Any browser** → the web app. Or **Docker Desktop** → `make up` (postgres + api + web in one command). Or **WSL2** → same as Linux. | The Rust API cross-compiles to Windows (`x86_64-pc-windows-msvc`); a prebuilt `.exe` is not produced by our release script yet. |
-| **macOS** (Intel/Apple Silicon) | **Any browser** → the web app. Docker images are built for both amd64 and arm64, so `make up` works on Apple Silicon. | Building a native macOS binary or a signed `.app` requires a Mac — not possible from this machine. |
-| **Android** (phones/tablets) | **Any browser** → the web app; it is offline-first (SQLite in the browser via OPFS), so it keeps working without signal. Add to home screen for an app-like icon. | A native Capacitor app (`apps/mobile`) is planned; needs Android Studio + a signing key. |
-| **iPhone / iPad** | **Any browser** (Safari) → the web app, same offline-first storage. | A native App Store build is planned and needs an Apple developer account — a human decision. |
+| **Windows** (10/11) | **Any browser** → the web app. Or **WSL2** → same as Linux. | The Rust API cross-compiles to Windows (`x86_64-pc-windows-msvc`); a prebuilt `.exe` is not produced by our release script yet. The Docker Desktop path exists but is not verified (see the README's known gaps). |
+| **macOS** (Intel/Apple Silicon) | **Any browser** → the web app. | Docker images are built for both amd64 and arm64, but the compose web/API URL wiring is not verified. Building a native macOS binary or a signed `.app` requires a Mac — not possible from this machine. |
+| **Android** (phones/tablets) | **Any browser** → the web app; it is offline-first (SQLite in the browser via OPFS), so it keeps working without signal. Add to home screen for an app-like icon. | Install and offline cache need HTTPS or `localhost`; a plain `http://` LAN address runs the app without them. A native Capacitor app (`apps/mobile`) is planned; needs Android Studio + a signing key. |
+| **iPhone / iPad** | **Any browser** (Safari) → the web app, same offline-first storage. | Same HTTPS requirement for install/offline. A native App Store build is planned and needs an Apple developer account — a human decision. |
 
 The one architecture decision that makes this possible: **the client is the
 web app** (React + Vite, local SQLite + outbox), and the server is **one Rust
@@ -34,4 +34,6 @@ binary + PostgreSQL**. Any device with a browser is a first-class client.
 | iOS | Capacitor | Apple developer account, Xcode on a Mac |
 
 Until those land, "install" on a phone means: open the URL → add to home
-screen. It works offline and updates itself on reload.
+screen. That needs HTTPS (or `localhost`); over plain `http://` the app runs
+but has no offline cache. Once installed over HTTPS, it works offline and
+updates itself on reload.
