@@ -169,6 +169,7 @@ export function QtyInput({
         <input
           id={inputId}
           className="stepper__value"
+          data-autofocus="true"
           style={{ border: 'none', background: 'transparent', minHeight: '44px' }}
           inputMode="decimal"
           value={text}

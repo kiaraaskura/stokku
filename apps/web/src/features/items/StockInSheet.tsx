@@ -109,9 +109,12 @@ export function StockInSheet({
       <p className="muted" style={{ margin: 0 }}>
         {t('stockin.currentStock', { qty: formatQty(item.stockM) })} · {t('stockin.avgCost', { cost: formatIDR(item.costAvg) })}
       </p>
-      <QtyInput label={`${t('stockin.qty')} (${item.baseUnit})`} value={qtyM} onValueChange={setQtyM} minM={0} />
-      <CurrencyInput label={t('stockin.cost')} value={cost} onValueChange={setCost} />
-      <Input label={t('stockin.note')} value={note} onChange={(e) => setNote(e.target.value)} />
+      {/* G29: keyboard-only flow — autofocus lands here, Enter moves to cost, Escape closes (Sheet) */}
+      <div onKeyDown={(e) => { if (e.key === 'Enter' && e.target instanceof HTMLElement && e.target.tagName !== 'BUTTON') { void save(); } }}>
+        <QtyInput label={`${t('stockin.qty')} (${item.baseUnit})`} value={qtyM} onValueChange={setQtyM} minM={0} />
+        <CurrencyInput label={t('stockin.cost')} value={cost} onValueChange={setCost} />
+        <Input label={t('stockin.note')} value={note} onChange={(e) => setNote(e.target.value)} />
+      </div>
       {cost > 0 && (
         <p className="muted" style={{ margin: 0 }}>
           {t('common.total')}: {formatIDR(qtyTimesUnitCost(qtyM, cost))}
