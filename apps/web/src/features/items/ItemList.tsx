@@ -130,6 +130,11 @@ export function ItemList() {
                         tabIndex={0}
                         onClick={() => navigate(`/barang/${item.id}`)}
                         onKeyDown={(e) => {
+                          // The row is only a shortcut for its own surface. A
+                          // key pressed on the "Stok masuk" button must reach
+                          // that button, or Enter opens the edit screen
+                          // instead of the stock-in sheet (G29).
+                          if (e.target !== e.currentTarget) return
                           if (e.key === 'Enter') navigate(`/barang/${item.id}`)
                         }}
                       >

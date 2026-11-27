@@ -48,7 +48,17 @@ export function Sheet({
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     const timer = requestAnimationFrame(() => {
-      panelRef.current?.querySelector<HTMLElement>('[data-autofocus], input, button')?.focus()
+      // Explicit priority: a marked target, then a real field, then any
+      // control. One combined selector would match whichever comes first in
+      // document order, which is the close button — so a keyboard user landed
+      // on "Tutup" instead of the quantity they came to type (G29).
+      const panel = panelRef.current
+      if (!panel) return
+      const target =
+        panel.querySelector<HTMLElement>('[data-autofocus]') ??
+        panel.querySelector<HTMLElement>('input, select, textarea') ??
+        panel.querySelector<HTMLElement>('button')
+      target?.focus()
     })
     return () => {
       document.removeEventListener('keydown', onKey)
