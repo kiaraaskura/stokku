@@ -15,7 +15,7 @@ Bahasa Indonesia first · IDR rupiah · offline-first · works in any modern bro
 You need: [Node.js 22+](https://nodejs.org) with [pnpm](https://pnpm.io), [Rust](https://rustup.rs), and [PostgreSQL 16+](https://www.postgresql.org).
 
 ```sh
-git clone <this repo> && cd stokku
+git clone https://github.com/kiaraaskura/stokku.git && cd stokku
 cp .env.example .env        # then edit: DATABASE_URL, JWT_SECRET, APP_BASE_URL
 make migrate                # create schema (from zero)
 make seed                   # optional: demo tenant "Warung Bu Sri"
