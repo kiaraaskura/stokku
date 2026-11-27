@@ -172,7 +172,7 @@ function LanguageSwitch(): ReactNode {
   return (
     <select
       className="input"
-      style={{ minHeight: '36px', width: 'auto', padding: '2px 6px', fontSize: 'var(--text-sm)' }}
+      style={{ minHeight: 'var(--tap-target)', width: 'auto', padding: '2px 6px', fontSize: 'var(--text-sm)' }}
       value={locale}
       aria-label="Language"
       onChange={(e) => setLocale(e.target.value as 'id' | 'en')}

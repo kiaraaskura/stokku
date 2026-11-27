@@ -156,6 +156,26 @@ export function DevRoute() {
             {t('dev.demoData')}
           </Button>
           <Button
+            variant="secondary"
+            disabled={!repo || busy}
+            onClick={() =>
+              void run(async () => {
+                await repo!.call('resetAll')
+                await repo!.call('completeOnboarding', {
+                  businessName: 'Warung G27',
+                  businessType: 'kelontong',
+                  taxRatePercent: 0,
+                  opening: null,
+                })
+                await repo!.call('seedItemsBulk', 5000)
+                await refresh()
+                toast('5.000 barang dimuat')
+              })
+            }
+          >
+            Isi 5.000 barang (G27)
+          </Button>
+          <Button
             variant="danger"
             disabled={!repo || busy}
             onClick={() =>

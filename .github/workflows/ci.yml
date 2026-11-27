@@ -117,8 +117,8 @@ jobs:
       # Migrations run on the admin DSN (0010 auth functions need a
       # superuser); seed + verify run as the non-superuser app role, exactly
       # like the dev environment.
-      MIGRATION_DATABASE_URL: postgres://postgres:SI_SECRET_DBPASSWORD_QH2HET5P@localhost:5432/postgres
-      DATABASE_URL: postgres://stokku:SI_SECRET_DBPASSWORD_QH2HET5P@localhost:5432/stokku
+      MIGRATION_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres
+      DATABASE_URL: postgres://stokku:ci@localhost:5432/stokku
     steps:
       - uses: actions/checkout@v4
       - name: Install postgres client + sqlx-cli
