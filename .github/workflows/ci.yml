@@ -1,9 +1,10 @@
 # Stokku CI — owner: Deployment (T-002).
 # Red CI must block merge: enable branch protection on main requiring
 # these checks (see infra/deploy/README.md "Branch protection").
-# Jobs skip themselves while their target is still a placeholder, so PRs
-# that only touch docs/config stay green; once real code lands, a failure
-# is a failure.
+# hashFiles() is not allowed in job-level `if` (GitHub rejects the whole
+# workflow), so the web/api jobs run unconditionally — their targets are
+# real code now — and only the compose image builds keep a step-level
+# hashFiles guard.
 
 name: CI
 
@@ -22,7 +23,6 @@ jobs:
     name: Web (typecheck · lint · tests · build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ hashFiles('apps/web/package.json') != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4 # reads packageManager from package.json
@@ -49,7 +49,6 @@ jobs:
     name: API (fmt · clippy -D warnings · DB-backed tests)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: ${{ hashFiles('services/api/Cargo.toml') != '' }}
     defaults:
       run:
         working-directory: services/api
