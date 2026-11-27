@@ -10,7 +10,7 @@ fi
 : "${DATABASE_URL:?DATABASE_URL is not set (copy .env.example to .env and set it)}"
 
 if ! command -v psql >/dev/null 2>&1; then
-  for d in /home/kiara/.hermes/cache/scratch/pg/bin /usr/lib/postgresql/*/bin; do
+  for d in /home/kiara/.local/pg17/*/bin /home/kiara/.hermes/cache/scratch/pg/bin /usr/lib/postgresql/*/bin; do
     if [[ -x "$d/psql" ]]; then export PATH="$d:$PATH"; break; fi
   done
 fi
