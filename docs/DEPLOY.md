@@ -12,7 +12,7 @@ This file is the short operational reference.
 | `JWT_SECRET` | yes | HMAC secret for access tokens. Generate: `openssl rand -base64 48`. |
 | `APP_BASE_URL` | yes | Public base URL of the web app, no trailing slash (CORS, share links). |
 | `PORT` | no | Listen port, default `8080`. `BIND_ADDR` overrides the whole address. |
-| `MIGRATION_DATABASE_URL` | no | Admin (superuser) DSN used **only** by `scripts/migrate.sh`. **Never the API's runtime DSN.** |
+| `MIGRATION_DATABASE_URL` | no | Admin (superuser) DSN used **only** by `scripts/migrate.sh`. It must name **the same database** as `DATABASE_URL` — the migrations run on this DSN, so pointing it at another database (e.g. `.../postgres`) silently migrates the wrong one. **Never the API's runtime DSN.** |
 | `STOKKU_TEST_ADMIN_URL` | no | Admin DSN for the DB-backed `cargo test`s only. **Never the API's runtime DSN.** |
 
 Set them via `.env` (gitignored; copy `.env.example`) or the platform's
@@ -33,7 +33,7 @@ From zero or incremental, one command:
 ```sh
 make migrate                                  # DATABASE_URL from .env
 # or explicitly as an admin (needed where the app role is not superuser):
-MIGRATION_DATABASE_URL=postgres://postgres@host:port/db make migrate
+MIGRATION_DATABASE_URL=postgres://postgres@host:port/SAME_DB_AS_DATABASE_URL make migrate
 ```
 
 `make migrate-check` proves the full set applies from zero on a throwaway
