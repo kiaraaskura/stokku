@@ -106,6 +106,13 @@ export function StockInSheet({
 
   return (
     <Sheet open={item !== null} title={`${t('stockin.title')} — ${item.name}`} onClose={onClose}>
+      {/* A real form so Enter in any field saves (G29 keyboard-only stock-in). */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          void save()
+        }}
+      >
       <p className="muted" style={{ margin: 0 }}>
         {t('stockin.currentStock', { qty: formatQty(item.stockM) })} · {t('stockin.avgCost', { cost: formatIDR(item.costAvg) })}
       </p>
@@ -125,9 +132,10 @@ export function StockInSheet({
           {error}
         </p>
       )}
-      <Button block disabled={saving} onClick={() => void save()}>
+      <Button block type="submit" disabled={saving}>
         {t('common.save')}
       </Button>
+      </form>
     </Sheet>
   )
 }
