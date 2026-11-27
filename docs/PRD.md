@@ -1,4 +1,4 @@
-# PRD — Inventaris UMKM (working title: *Stokku*)
+# PRD — Stokku: Aplikasi Inventaris dan Buku Kas Luring untuk Laba Rugi UMKM yang Akurat
 
 | | |
 |---|---|

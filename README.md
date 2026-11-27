@@ -19,14 +19,27 @@ git clone <this repo> && cd stokku
 cp .env.example .env        # then edit: DATABASE_URL, JWT_SECRET, APP_BASE_URL
 make migrate                # create schema (from zero)
 make seed                   # optional: demo tenant "Warung Bu Sri"
-make dev                    # web on http://localhost:5173, API on :8080
+
+# terminal 1 — API on the port the web client expects
+(cd services/api && PORT=8099 cargo run)
+
+# terminal 2 — web
+(cd apps/web && pnpm dev)   # open http://localhost:5173
 ```
 
 Demo login (after `make seed`): `owner@demo.test` / `Demo1234!`
 
+`make dev` starts both processes but puts the API on 8080, while the web client's default is `http://localhost:8099`. Until that is wired, use the two terminals above, or start the web app with `VITE_API_URL=http://localhost:8080`.
+
 Other commands: `make test` (web tests, API tests + clippy, migration check) · `make build` · `make up` / `make down` (Docker: postgres + api + web) · `make release` (one-command release bundle) · `make backup` (pg_dump with 7-day retention).
 
 Env vars and the migration step: [docs/DEPLOY.md](docs/DEPLOY.md). Which platform runs what: [docs/PLATFORMS.md](docs/PLATFORMS.md).
+
+## Known gaps
+
+- **Docker:** `make up` is included, but the web image is built without `VITE_API_URL`, so it calls `http://localhost:8099` while compose publishes the API on 8080. The page loads; login cannot reach the API until that build argument is wired.
+- **Native apps:** the Tauri and Capacitor shells are placeholders. Browsers and the PWA are the supported clients.
+- **PWA offline:** the service worker registers only on HTTPS or `localhost`. Opening the build over a plain `http://` LAN address gives you the app, but not the install/offline cache.
 
 ## Platforms
 
@@ -34,8 +47,9 @@ Env vars and the migration step: [docs/DEPLOY.md](docs/DEPLOY.md). Which platfor
 |---|---|
 | Linux, Windows, macOS — **any browser** | ✓ works today (web app + API) |
 | Linux — native API binary | ✓ `make build` (Rust, single binary) |
-| Windows — Docker / WSL | ✓ `make up` (needs Docker) |
-| Android, iPhone, iPad — browser / PWA | ✓ works today |
+| Windows — WSL2 | ✓ same as Linux |
+| Windows — Docker | — `make up` present, not verified (see known gaps) |
+| Android, iPhone, iPad — browser / PWA | ✓ works today, over HTTPS or localhost |
 | Android, Windows, macOS native app | planned — Capacitor / Tauri shells (`apps/mobile`, `apps/desktop` are placeholders) |
 
 Details and limits: [docs/PLATFORMS.md](docs/PLATFORMS.md).
