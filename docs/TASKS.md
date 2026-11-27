@@ -1,8 +1,10 @@
-# Task Breakdown — Inventaris UMKM (MVP v0.1)
+# Task Breakdown — Stokku (MVP v0.1)
 
 Companion to `PRD.md`. Sizes: **XS** < 2 h · **S** ≈ 0.5 d · **M** ≈ 1–2 d · **L** ≈ 3–5 d. Estimates assume **one senior full-stack dev** with Rust + React experience, part-time design. Total ≈ **11 weeks** to public beta. Two devs compress this to ~7–8 weeks if M1/M2 are split.
 
 Definition of done for every task: code merged, tests where it makes sense, works offline where applicable, no console errors, Indonesian strings in `i18n`, and the acceptance line verified by hand, not assumed.
+
+**Kaitan SDGs.** Setiap milestone menyumbang pada SDG 8 (inti); M1–M3 juga menopang SDG 9 dan SDG 10 melalui biaya infrastruktur rendah dan keterjangkauan perangkat. Pemetaan lengkap ada di bagian "Judul dan SDGs" pada `PRD.md`.
 
 ---
 
