@@ -106,7 +106,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
+      # No android-actions/setup-android here: on current runner images its
+      # sdkmanager exits 1 ("Failed to find package 'tools'"); the runners
+      # already ship the SDK with accepted licenses (ANDROID_HOME is set).
       - run: pnpm install --frozen-lockfile
       - name: Build web
         run: pnpm --filter @stokku/web build
