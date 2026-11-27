@@ -116,25 +116,19 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   }, [repo, session, refresh])
 
   // On logout, wipe the cached tenant data so a different account starts clean.
+  // Keyed on meta.api_tenant_id (set ONLY by setServerSession): a fresh local-mode
+  // onboarding never sets it, so this wipe can never destroy offline data.
   useEffect(() => {
     if (!repo) return
     void (async () => {
-      if (!api.hasSession()) {
-        const wasApiMode = (await repo.call('getServerCache', 'api:had-session') as { payload: unknown } | null)?.payload === true
-        if (wasApiMode) {
-          await repo.call('resetAll')
-          await refresh()
-        }
+      if (api.hasSession()) return
+      const apiTenantId = await repo.call('getMetaValue', 'api_tenant_id')
+      if (apiTenantId !== null && apiTenantId !== '') {
+        await repo.call('resetAll')
+        await refresh()
       }
     })()
   }, [repo, api, refresh])
-
-  useEffect(() => {
-    if (session) {
-      void repo?.call('setServerCache', 'api:had-session', true)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.tenant.id])
 
   // Network state.
   useEffect(() => {

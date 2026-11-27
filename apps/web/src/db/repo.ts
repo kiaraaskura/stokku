@@ -40,6 +40,11 @@ export function getMeta(db: Db, key: string): string | null {
   return row?.value ?? null
 }
 
+/** Read one meta value (or null) — RPC-friendly for the AppState wipe check. */
+export function getMetaValue(db: Db, key: string): string | null {
+  return getMeta(db, key)
+}
+
 export function setMeta(db: Db, key: string, value: string): void {
   db.run('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, value])
 }
@@ -853,6 +858,22 @@ export function resetAll(db: Db): void {
      PRAGMA user_version = 0;`,
   )
   migrate(db)
+}
+
+/** Dev-only: bulk-insert N items for the G27 search/scroll performance pass. */
+export function seedItemsBulk(db: Db, count: number): number {
+  db.transaction(() => {
+    const stmt = db.run // keep linters happy about unused
+    void stmt
+    for (let i = 0; i < count; i++) {
+      db.run(
+        `INSERT INTO item (id, sku, name, category_id, base_unit, sale_price, cost_avg, min_stock_m, active, updated_at)
+         VALUES (?, ?, ?, NULL, 'pcs', ?, ?, 0, 1, ?)`,
+        [uuidv7(), `SKU${100000 + i}`, `Barang Uji Nomor ${i} ${i % 7 === 0 ? 'Sembako' : i % 5 === 0 ? 'Minuman' : 'Lainnya'}`, 1000 + (i % 50) * 100, 500, new Date().toISOString()],
+      )
+    }
+  })
+  return count
 }
 
 /** Demo seed reproducing ACCEPTANCE.md section A exactly. */
@@ -1777,6 +1798,7 @@ export const repoMethods = {
   isOnboarded,
   getTenant,
   getOutlet,
+  getMetaValue,
   getOnboardingDraft,
   saveOnboardingDraft,
   completeOnboarding,
@@ -1826,6 +1848,7 @@ export const repoMethods = {
   deleteCashEntryRow,
   deleteLocalSale,
   seedDemo,
+  seedItemsBulk,
   resetAll,
 } as const
 
@@ -1865,6 +1888,7 @@ export const MUTATING_METHODS = new Set<RepoMethodName>([
   'deleteCashEntryRow',
   'deleteLocalSale',
   'seedDemo',
+  'seedItemsBulk',
   'resetAll',
 ])
 
